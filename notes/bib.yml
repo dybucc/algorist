@@ -1,0 +1,12 @@
+skiena-2020:
+  type: Book
+  title: "The Algorithm Design Manual"
+  author: "Skiena, Steven"
+knuth-graphbase:
+  type: Book
+  title: "The Stanford GraphBase"
+  author: "Knuth, Donald Ervin"
+knuth-literate:
+  type: Book
+  title: "Literate Programming"
+  author: "Knuth, Donald Ervin"
