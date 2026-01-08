@@ -10,3 +10,9 @@ knuth-literate:
   type: Book
   title: "Literate Programming"
   author: "Knuth, Donald Ervin"
+ds-handbook-graphs:
+  type: Chapter
+  parent:
+    type: Book
+    title: "Handbook of Data Structures and Applications"
+  author: "Deo, Narsingh"
