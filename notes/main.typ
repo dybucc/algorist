@@ -368,8 +368,8 @@ be used as memory for an object, but rather as pre--allocated resources to make 
 The basic use of `Area`s follows that the user should consider in which segment of the program the
 resource handle is stored at, and if it is outside the statically initialized data segment, so
 either in _bss_ or in stack space (I don't think it a good idea to have it in the free store) then
-it should proceed to call the `gb_init` macro to initialize the array to `NULL` (this, for one, is a
-correct use of the symbol.) Each `Area` represents a fixed--size heap allocation, and each call to
+it should proceed to call the `init_area` macro to initialize the array to `NULL` (this, for one, is
+a correct use of the symbol.) Each `Area` represents a fixed--size heap allocation, and each call to
 the `gb_alloc()` routine with a block size and an `Area` passed as parameters is expected to either
 #l-enum[allocate on a `NULL` memory area][extend a non--`NULL` memory area, or][return `NULL` (as a
   status code, so quite wrongly assuming it expands to `0` on all platforms) if the `Area` cannot
@@ -390,23 +390,290 @@ it both allocates the required heap memory on said area, and returns a pointer t
 pointer to the type passed as part of the `gb_typed_alloc` macro.
 
 The `gb_alloc()` routine, at its core, only really `calloc()`s $2^8$ items, each made out of `n`
-bytes passed as parameter (having applied the ceiling function to those `n` bytes such that they are
-a multiple of the platform's pointer size, `char *` back when the program was written instead of
+bytes passed as a parameter (having applied the ceiling function to those `n` bytes such that they
+are a multiple of the platform's pointer size, `char *` back when the program was written instead of
 `void *`, but 8 bytes either way (#smallcaps[LP] or #smallcaps[LLP] models would do just fine, and
 the program likely predates the time when proposals over these two "ended" other memory models.))
 The specific size of each of the elements to be allocated is not completely clear to me just yet;
 DEK computes $n / m + (2m) / m + (m - 1) / m$, which should theoretically resolve to
 $approx (n - 1) / m^2 + 1 / m + 3$. But this meaning of this is lost on me right now. Maybe it only
 serves as a range restriction as per the notice in the documentation, which comments on old--style C
-having a hard limit on the byte size passed as the first parameter to `calloc()`.
+having a hard limit on the byte size passed as the first parameter to `calloc()` (I've not found any
+such warnings on current--day, BSD--derivative, manpages.)
 
 If the allocation is sucessful, the returned region of heap memory goes through three main
-"manipulation" steps:
+"manipulation" steps, in the order described here.
 
 + The address lying `n` bytes (post--ceiling function) forward from the returned `calloc`ation is
-  cast into the element of an `Area` (the underlying `struct area_pointers *`) while a separate
-  temporary `Area` is dereferenced (making use of array--to--pointer decay to reach directly for the
-  first element, again a `struct area_pointers *`) to have assigned to its `first` field the
-  starting address of the original `calloc`ation,
+  cast into the element of an `Area` (the underlying `struct area_pointers *`.)
++ A separate, temporary `Area`, is dereferenced (making use of array--to--pointer decay to reach
+  directly for the first element, again a `struct area_pointers *`) to have assigned to its `first`
+  field the starting address of the original `calloc`ation, and to its `next` field the dereferenced
+  `Area` that was originally passed to the `gb_alloc()` routine (ibid.)
++ This latter (original) `Area` is again dereferenced to have its single element pointer
+  `struct area_pointers *` alias the dereferenced element pointer of the former (temporary) `Area`.
+
+This screams cycling references. Barring the fact that I don't yet understand the size of `n` after
+having applied (what seems like) a ceiling function to make it a multiple of the platform's pointer
+size, this only really takes a bunch of memory from the free store, offsets it and gets a pointer
+equivalent to the one in an `Area`, and proceeds to assign to that pointer's `first` field the
+non--offsetted memory address, and to its `next` field the original `Area`'s underlying element, to
+end up assigning to this same element the temporary's element we've been operating on all along.
+
+The final state of the original, parameterized, `Area` has its single pointer element hold `first`
+to the actual start of the `calloc`ation, and `next` to the itself (starting off as a `NULL` pointer
+and following up with the allocations prior to the one performed on a call to `gb_alloc()`.)
+
+Tracing the behavior of the `gb_alloc()` routine across a second call would have the passed `Area`
+be already allocated with a reference to `NULL` in its only element's `next` field, and a pointer to
+this same element's own adress minus an offset equivalent to the allocation of the current block in
+its `first` field. Fast forward to the end of the memory allocation request routine, and once the
+`calloc`ation has yield a pointer, the heap memory towards which the pointer leads is cast into the
+area's underlying pointee element type (`struct area_pointers`,) prior to performing an assignment
+to the `first` field of the temporary `Area` within the routine corresponding to the new block,
+after which the `next` field will be a pointer to the previous `Area` passed to the function, so
+that this same memory area holds a pointer to the start of the new allocation in its signle
+element's pointee `first` field, and another pointer to the allocation we had before in its `next`
+field.
+
+Technically speaking, this stops being a potential source of self--referential pointer cycles after
+the first call, because if the user of the library takes care of keeping track of the `Area` (which
+they should,) then _the_ pointer element within it (considering it's a singleton array of
+`struct area_pointers *`,) should lead to the "previous" allocation through its `next` field. So
+this field of the underlying structure acts as more of an indicator to the previous allocation, than
+as an indicator of which memory area comes after it.
+
+The only way this represents a win in terms of efficency is if `calloc` is trusted to return
+contiguous memory allocations from some source array on the free store. This scheme would then have
+each `Area` hold both its own allocated size request (if it doesn't surpass `0xFFFF00` #sym.approx
+16 M bytes,) and a pointer to the start of the previously allocated `Area`, which if the calls to
+the C standard library functions work as assumed by DEK, should yield contiguous addresses after
+$255 times n "bytes"$.
+
+This is not the case in modern systems, and has never been the case in both ANSI and post--ANSI C.
+The win in efficency is arguable. Having single--threaded arena--like behavior encapsulated in a
+linked list--like `Area` object is not any better than having an array of pointers to memory
+allocated on the heap through any of the `*alloc()` routines in standard C. Assumming they are all
+just resource handles acting as a bridge between the default system allocator and the library user,
+it's not feasible to try replicating this same strategy in Rust (because even if it relies on
+initialized, non--null memory ranges, it's still type--unaligned memory that would require calls to
+`std::mem::transmute()` to force a bit--level pattern reinterpretation, which is no better than
+`reinterpret_cast<>()` in C++, and that's dangerous in and of itself.)
+
+A potential implementation that would both #l-enum[assure _contiguousness_ in the allocated memory,
+  as well as][allow for modern--day heap allocations without linked list behavior] would be to use
+memory mappings from the UNIX API. This would be limitting for non--UNIX API users, but could be
+both safely implemented with the `rustix` safe wrapper around these syscalls, and is also how
+`malloc()` is implemented starting at certain memory request sizes in glibc. More specifically, this
+would use private, anonymous mappings on the process' virtual memory address space, letting the
+kernel allocate memory wherever it deems safe, while keeping a very similar memory arrangement, in
+terms of a pointer leading to the next `mmap`ed memory region. A single resource handle would hold
+reign over a conservative `Vec` capacity--like `MaybeUninit` region of memory, and any requests
+through the corresponding library API woudl be forwarded to such handle, which would return a
+pointer to the address range with the specified amount of bytes in the request, but would fail if
+the references taking up space in such region have depleted the required memory to fulfill the
+latest request. This, though, presents three issues.
+
+- The `mmap`ped memory region must be large enough while still being conservative on the available
+  memory provided to the process (must account for OOM in Linux and most BSDs.) The nomicon likely
+  can given clues in chapter 9, where the reference implementation for `std::vec::Vec` is given
+  along with an explanation on correctly doing OBRM.
+
+- The resource handle would be forced to keep a reference count of both the referees making each
+  request, as well as of the memory regions that they themselves hold resources over. This is pretty
+  much replicating garbage--collected behavior of GC languages, except the reference count would
+  only go down if a corresponding call to the deallocation routine is performed by the requestee
+  that initially made the resource allocation call. This can be modeled through the `Drop` trait and
+  associated `drop()` function on whichever type expects memory to be returned from this additional
+  abstraction layer.
+
+- Each call to `mmap()` would not be guaranteed to return a contiguous memory region, especially not
+  if the starting address is kernel--dependent. A possibility would be for the initial `mmap()` call
+  to be the _only_ call to this syscall that lets the kernel pick an arbitrary address, such that
+  subsequent allocations rely on having a handle over both the starting address and the offset that
+  it is bound by, then performing overlapping `mmap()` calls with the first parameter of the syscall
+  denoting the starting address of the new range, and the parameter denoting the mapped size being a
+  bounds--checked range over the original call. This could still potentially require another call to
+  `mmap()` to fetch another chunk of memory from the process' virtual adress space, but if fairly
+  decent heuristics can be found to set an initial "good" size, it should not happen as often as one
+  would expect.
+
+To round up the explanation on the memory allocation routines, the function in charge of having
+space deallocated, `gb_free()`, simply calls on a loop the C standard library function `free()`
+while first keeping track of a the corresponding `next` field in a separate pointer, such that the
+next iteartion of the loop may have another handle to free resources from. Of course, the exit
+condition is the `NULL`--ness the temporary pointer repeatedly fetched from the `next`.
+
+The docs on the `Graph` type explain the existence of an assortment of routines to both create a
+graph, and attempt to efficently handle both vertices and edges. Most of the strategies followed by
+DEK are completely useless nowadays, and would require the use of platform--dependent code to rely
+on pointer arithmetic behavior that is not predictable outside MIPS and x86-32 and x86_64. A
+consequence is that the type system will be the only thing ported over to Rust, as the memory
+allocation practices are, in general, not apt for a portable, non--UNIX dependent program.
+
+The type at hand considers 5 fields of chief importance for the graph, two `Area`s for data on arcs,
+strings and other auxiliary information; And 6 `util` union types as well as an additional field
+denoting a string whose single character sequences provide meaning to each of the utility fields.
+
+The first five fields include a heap--allocated array of `Vertex` type. DEK uses heap allocations
+here for obvious reasons when it comes to vertex generation at runtime. There's two fields denoting
+the properties often found in textbooks by the same name, namely $n, m$, to denote both the number
+of vertices as well as the number of arcs in the graph (the predominant use of the arc terminology
+seems to be related to the fact DEK, and likely other sources, refer to these vertex links as
+"edges" only when speaking in the context of undirected graphs, but as "arcs" with both directed and
+undirected graphs.) Beyond this, each `Graph` is also outfit with two `Area`s, the first one used as
+a resource handle over both `Arc`s referred to by pointers in the vertices of the graph, and over
+strings with which to describe those arcs. The second `Area` is used as an auxiliary region for
+algorithms that may require scoped allocations bound within the graph instance, though some of the
+routines also use these, mostly for "tricks", as per DEK's own words.
+
+The `util` unions on the graph are very much akin to those found in the `Vertex` structures except
+that they are also accompanied (within the `Graph` structure) with a single character array field
+acting as the discriminant of the union. This is truly a showcase of the severe limitations and
+safety issues with C--style unions, and likely also the reason why the Rust rewrite should attempt
+to avoid such an approach. As a consequence, even though we speak of a string field, this is in
+actuality a purely character--based array where each character denotes in uppercase letters the
+purpose of the utility field at any given time (thus this acts as a (possible) warning to library
+users against the use of such fields without proper modification of the character discriminant, if
+the graph is to be used along with the exporting facilities the kernel routines provide for
+interaction with outside applications/libraries.) The characters in question follow the same
+semantics as the names in the union declaration itself, such that for each of the possible fields,
+it considers the complete set of union fields, and additionally a character `Z` to indicate that the
+field in question is not being used.
+
+Each graph also holds an `id` field for the purposes of interaction with other graphs in the
+generative routnies of the GraphBase program itself. The tone with which DEK speaks while explaninig
+each of the elements of the API is very much that of a library providing graph primitives and not
+that of a library providing a graph testing framework, often mentioning the use of algorithms and
+how would these benefit from the fields provided to the developer of such routines, so it's as a
+conservative heuristic, I belive this kernel file should *not* be taken to be a realiable source to
+base the trait--based interface off of for the composable engine API covering the funtionaltiy of
+said core routines.
+
+The reasoning behind the field describing the `util` unions present on each graph is that of
+providing an explanation for not only the graph's own union fields, but also that of providing
+meaning for the fields on each `Vertex` and `Arc` in the `Graph`. The selected formatting follows
+the afore--mentioned semantics, while expecting the user of such fields to interpret the first six
+indices as being those relative to the `Vertex` fields in the corresponding array, the next two
+fields as being those corresponding with the union fields present in `Arc`s, and the last six as
+being those in the `Graph` proper. The array, by default, is outfit with 15 characters, not so much
+because it requires of another field, but because it's implicitly also an ASCII--Z terinated string
+(a null--terminated string.) This design choice also implies the author is not expecting the API to
+be used without complete uniformity over the use of each `util` field for all vertices and arcs in a
+given graph (i.e. if the discriminant for some field of a vertex denotes a certain purpose for said
+vertex, such purpose is extended to any and all vertices in the graph.)
+
+Because these fields' main purpose is that of providing a discriminant for the union and because DEK
+expects their use to be most often found in the #smallcaps[I/O] routines, they could be completely
+replaced with a trait--based implementation on the formatter API such that exporting was modeled
+after the Serde serialization/deserialization practices, which could make for an API that would be
+as extensible as the user's would require. A possible implementation would go through using a
+Serde--like custom `derive` macro that would allow arbitrary user input on an external proc macro to
+set up the serialization and/or deserialization of the graph primitives involved in the generative
+routines of GraphBase.
+
+The graph creation routine, `gb_new_graph()`, performs two main operations: #l-enum[allocating space
+  for the graph and a parameterized amount of edges $n$ passed as part of the routine, plus an
+  additional amount of vertices due to some algorithms requiring so, and][setting up the value of a
+  few file statics that cache part of the state of a graph upon creation to apparently make more
+  efficient the use of certain routines often called right after the creation of a graph].
+
+During initialization, the above routine will also set the `util` union fields to hold the
+discriminant variant standing for no information, namely character `Z`. This function will also set
+up the associated string identifier of the graph (the so--called `id`) to non--UID that is meant to
+be either immediately changed through one of two other routines, or left as part of the auxiliary
+graph IDs to be used in these two latter routines.
+
+The functions concerning themselves with graph ID--setting provide either a single graph--to--graph
+way to perform such ID--setting operation, or alternatively a 2--graph to single graph ID setting
+routine to set a graph's ID from the ID of two other graphs and some additional strings. These
+routines will, for now, not be documented as a better approach would be the implementation of a UID
+algorithm for the graphs (which should be fairly simple, considering the `id` field serves as a
+means of inter--graph communication in the generative routines, and thus has no significance at the
+cryptographic level.)
+
+As previously mentioned on the graph creation routine, one of the two main tasks it performs is to
+set up some external globals to cache graph state, and make sure fallible routines can indicate
+failure beyond the global error status codes (both the one set with the allocation request routines
+and the one found in the routines concerned with random number generation.) The set variables
+include symmetric equivalents for #l-enum[arc allocation, as `Arc`s are allocated in bulk with
+  `Area`s in `gb_alloc()` and a pointer is required to indicate both the availability of an arc that
+  has not yet been added to the graph on a logical level and the possible failure state that should
+  be compared with its symmetric counterpart][string allocation, ibid. considering the use of an
+  `Area` specifically for the purposes of storing both this and the prior resource, and][graph
+  allocation, ibid.]
+
+The routines involved with arc/edge creation are themselves wrappers for a more primitive routine
+that uses the current graph's main `Area` (recall the existence of two `Area`s, one of which was
+used for auxiliary purposes) to allocate a conservative default of 102 new arcs, irrespective of the
+amount actually required at any given point throughout program execution. There's two wrappers
+because one covers the usecase of having single--directionall arcs for directed graphs, while the
+other considers bidirectional arcs to denote the existence of an edge in an undirected graph (more
+generally, if a graph is undirected, it is also a multigraph where any two vertices given by
+$(i, j)$, always have two arcs $i -> j, j -> i$ of same weight, which voids direction of any
+meaning, and thus makes the graph _undirected_.)
+
+Note this routine also uses the previously mentioned file statics to indicate either that the next
+available arc is the one offset by one byte after the address of the returned `gb_alloc`ated amount
+of arcs (thus one past the address denoted by the `first` field of the pointee of the element of the
+main `Area` of a `Graph`,) or that the allocation failed, and the "bad arc" variable must be assumed
+to be pointing past all elements that _should_ have been returned from the `gb_tpyed_alloc` macro
+invocation.
+
+The core logic of the routine, though, is fairly simple. If the global pointer holding the address
+of the next available (but not yet part of the graph) arc indicates it has reached the global
+holding the address found one element past the end of the `gb_alloc`ated `Area` currently tracked by
+the graph's main `Area`, then it's time to call `gb_alloc()` again and request another 102 arcs in a
+single block of memory that will now make the current graph's main `Area` become the holder of such
+resources, while keeping the previously allocated `Area` (used up) in its single element's pointee's
+`next` field (yes, the _previous_ memory area is held in the `next` field.) Otherwise, it simply
+advances the global pointer tracking the next available arc in the current `Area` by 1 and returns
+another pointer aliasing that same pointer prior to having advanced it (thus the returned pointer is
+the one that was available on entry, while on exit, the tracking global pointer is past one element
+from the one returned and indicates again the next available but not set arc.)
+
+The invariant held over which one is the "current" graph, and thus which `Area` should be the one
+being manipulated is weak in its semantics. Among the globals participating in the above routine,
+there's one that also tracks the graph that was created last with `gb_new_graph()`. That's the one
+holding all the responsibility with respect to which graph's `Area` is to be manipulated, pointed
+to, invalidated or extended. In this routine, a pointer is set to alias the returned graph. This has
+some severe limitations, that are only partially (and wrongly) bypassed by using the
+`gb_switch_graph()` routine to temporarily use some of the union fields in the "current" graph to
+store the information of such graph, and reset all union fields of the graph that is now meant to
+become the "current" graph. Then one may operate with the global referring to the "current" graph
+knowing as well that this refers to the graph passed as a parameter to the graph switching routine.
+
+This procedure forces the "current" (prior) graph's union fields to be invalidated, and thus expects
+the user to only use those fields after any logic involving arcs and edges is completed. Otherwise,
+the union fields themselves will not restore their previous state. The most noticeable limitation,
+though, is the requirement on the passed graph having to have already gone through another graph
+switching routine itself to be "switched out." Because initially no graph could possibly have been
+switched out, DEK offers as an alternative to pass `NULL` to this routine right after the creation
+of a graph that is "planned to be switched out", only for the side effects it has on the global,
+which are the ones that force the requirement of the "current" graph (denoted by the corresponding
+global) having had to be switched in the first place.
+
+This is going to need severe refactoring in Rust.
+
+The wrapper to add an arc to a directed graph performs no logic beyond changing pointees of graph,
+vertex and arc pointers, such that the new state of the adjacency list with an additional edge
+remains senseful. The wrapper around edge creation in undirected graphs is slightly more complex,
+but its implementation design will likely have to be trashed in Rust, as it heavily relies on the
+numerical value of pointers by directly comparing their adresses to determine a set of invariants
+over whether an arc can be found nearest in memory to its inverse arc (where the mapping of inverse
+arcs is that in which both such arcs, the _un_\inverted and the inverted, make up the concept of
+edge, devoid of direction.) This also forces further restrictions on the call chain of arc creation
+routines as apparently mixing up this one with the other wrapper or with the underlying primitive
+function will lead to possibly undefined behavior or otherwise an ill--formed program.
+
+No further comments will be made on these routines because they only perform trivial (and non--C
+standard conformant) pointer arithmetic, that will be completely replaced in Rust.
+
+The last routine the documentation comments on is concerned with string allocation for the purposes
+of arc labeling, making up the other part of the main `Area` in a `Graph`. This function follows the
+same trend as the ones last commented on, using a few lines of pointer arithmetic to advance the
+pointer to the first character in a character string, and avoids using C standard library functions
+for appending strings (`strcat` being the only one back when this was written,) as they can be
+fairly inefficient.
 
 #bibliography("bib.yml")
