@@ -656,7 +656,7 @@ global) having had to be switched in the first place.
 This is going to need severe refactoring in Rust.
 
 The wrapper to add an arc to a directed graph performs no logic beyond changing pointees of graph,
-vertex and arc pointers, such that the new state of the adjacency list with an additional edge
+vertex, and arc pointers, such that the new state of the adjacency list with an additional edge
 remains senseful. The wrapper around edge creation in undirected graphs is slightly more complex,
 but its implementation design will likely have to be trashed in Rust, as it heavily relies on the
 numerical value of pointers by directly comparing their adresses to determine a set of invariants
@@ -667,13 +667,151 @@ routines as apparently mixing up this one with the other wrapper or with the und
 function will lead to possibly undefined behavior or otherwise an ill--formed program.
 
 No further comments will be made on these routines because they only perform trivial (and non--C
-standard conformant) pointer arithmetic, that will be completely replaced in Rust.
+standard conformant) pointer arithmetic that will be completely replaced in Rust.
 
 The last routine the documentation comments on is concerned with string allocation for the purposes
-of arc labeling, making up the other part of the main `Area` in a `Graph`. This function follows the
-same trend as the ones last commented on, using a few lines of pointer arithmetic to advance the
-pointer to the first character in a character string, and avoids using C standard library functions
-for appending strings (`strcat` being the only one back when this was written,) as they can be
-fairly inefficient.
+of vertex/arc labeling, making up the other "client" of the memory served by the main `Area` in a
+`Graph`. This function follows the same trend as the ones last commented on, using a few lines of
+pointer arithmetic to advance the pointer to the first character in a character array, and avoids
+using library functions for appending strings (`strcat` being the only one available back when this
+was written,) as they can be fairly inefficient. The approach to either returning the next available
+string or otherwise trying to allocate memory equivalent to that of the length of the string is used
+in the same way as with the arc allocation routines (except `gb_alloc()` is called directly with the
+requested size of the string because DEK likely assumed that either only the ASCII character set
+would be used, or otherwise the user would be prone to manually compute the length of any of their
+#l-enum[wide strings, or][UTF--8 encoded strings].)
+
+If the corresonding global pointing to the next piece of memory in the `Area` of the "current" graph
+(itself denoted by another risky global) does *not* have the same address as the _other_ global
+pointing one past the end of the valid, allocated `Area` and there's enough space available in that
+same `Area` for the length of the string (i.e. offsetting the former global does not yet yield the
+latter global,) then the routine deems it safe to perform straight pointer arithmetic on the buffer
+starting at the in--bounds ("good") global to yield as many bytes as the requested length indicates.
+Otherwise, it attempts to allocate either the size of the string if this surpasses the default size
+request, or otherwise the default size request. Calls with a size smaller than the minimum in bytes
+are clamped to that minimum due to the fact requests to the allocation mediator routine provided by
+the library advise against using sizes smaller than 1000 bytes, as starting from that size the
+amount of syscalls required to actually reserve such heap memory, if available, should decrease. I
+highly doubt this is the case anymore nowadays, and DEK himself doesn't provide any reference to
+implementations of these C library functions that would lead one to believe this has changed.
+
+This whole routine is completely out of the Rust rewrite. Maybe refactoring the standard Rust
+`String` struct to rid it of unnecessary behavior would be an option, but even then, the
+`std::string` module knows how to be efficient. And the most of this whole memory allocation
+strategy that's getting into the refactor is (maybe) an abstraction layer over the `std::allocator`
+structs to further mediate between the library user and the system allocator (only if that's
+possible without forcing it on the dependent crate.)
+
+There's also a routine to free the resources of the graph, that calls the corresponding
+memory--freeing routines on `Area`s, and `free()` on the passed graph (`Area`s are not used to keep
+a record of `Graph`s in `gb_graph.w` but that may very well be the case in the generative routines,
+considering DEK exposes memory areas explicitly as part of the public interface of the library
+kernel modules.) This is not going to be discussed further, because it's completely useless with
+#smallcaps[RAII] in Rust. The only possible modification to the `drop()` trait method that would be
+required to implement similar semantics would require overwriting the `std::allocator` structs,
+which may or may not be possible if the dependent crate is also affected by such changes to the
+system allocation Rust #smallcaps[API]. The `std::alloc` module does mention that the attribute
+`[global_allocator]` can only be used once on a crate, but doesn't further specify whether
+dependencies of that crate will be forced into using the same memory allocator. It does mention,
+though, that recursive dependencies of a crate (so I'm assumming this includes both explicit cargo
+dependencies and whichever dependencies these themselves include) can only ever specify this
+attribute once. This does mean that if this library (GraphBase) includes code that overwrites the
+allocator, (direclty or indirectly) dependent crates will be forced into using the same allocator,
+as that's what I can infer from the fact that a no two crates involved in a package can have the
+attribute used more than once.
+
+Initially, I believe it best to implement the library in terms of `std` defaults, and worry later
+about how could the DEK memory management strategy be implemented in Rust.
+
+The docs now move on to the part of the library implementing functionality for fast $upright(O)(1)$
+vertex lookup through their string labels. This is considered in the context of hashing with
+separate chaining, using the derived results from DEK's conclusions on the number of probes that
+would be required to compute the number of comparisons between the (hashed) input key and some
+search key that would change as the symbol table was traversed. In the initial implementation, I
+believe the Rust code should just use the algorithms in the standard library to compute the hashes
+of the string keys, and store them in either one of an auxiliary hashmap stored within the
+overarching graph representation/DS, or otherwise use an extension interface to allow the users to
+make arbitrary use of the hashmap DS as they see fit. A possible implementation for this would be
+the use of proc--macros for compile--time addition of a field in the graph DS, such that use of that
+feature is gated to a user request on codegen.
+
+Another reason to get the proposed strategy replaced is due to the fact the number of nodes after
+creation of the hashmap ought be kept consistent by the user, as otherwise the whole hashmap would
+have to be rehashed. I'm not completely sure about the extent of this limitation in Rust's
+`HashMap`, but at least the user is assured that if such thing were required, it's quite possible
+that the container could make do by itself without manual intervention. There's also the fact that
+auxiliary global pointers are messed with, which is not exaclty ideal. Add to that the use of `util`
+unions on the `Graph`, and we're pretty much binding the user to another set of strict requirements
+on the extent of their use of such fields; Especially considering the note warning against possible
+system crashes if one does not meddle with great care.
+
+In Rust, I think both the union fields and the additional hashmap could be implemented in terms of
+proc--macros. These would allow the crate user to generate, on a case--by--case basis, instances of
+the `Graph` DS proposed by DEK with well--defined extensions to the `struct`s through
+attribute--like macros. The feasibility of this, though, is quite uncertain. On the one hand,
+tagging existing structures with attribute--like proc--macros seems like an option worth
+considering. On the other hand, one soon realizes that such need would not arise in a dependent
+crate unless the user designed themselves the graph DS. Then, if one considers providing
+pre--existing data types for graphs, the attribute--like macros would be forced to either act as
+extensions to all generated instances of the graph DS, or otherwise... God knows. The ideal
+behavior, just to get the idea out, would be for the user to create the graph DS and then allow them
+to, on a case--by--case basis, tag some given instance with the attribute. Such thing would allow
+the underlying proc--macro to create a new type for the graph (with a possibly mangled name that
+would include an custom identifier; Maybe a hash key relating to the identifier of the variable with
+the attribute?) such that this type could be used for the purposes of plugging a given struct into a
+generic interface expecting a type that implements some trait that the newly generated structure
+could also implement. Whether this is at all possible in any context in which a user is required of
+a type implementing a given trait for a specific function, is very much related to the extent with
+which the Rust grammar allows flexibility in the declaration of new types and the scopes in which
+this can happen.
+
+The proc--macros idea seems feasible. The only thing to consider as a notable difference from what I
+commented on above is the way one would encode information relative to a newly generated type.
+Simply using a hash function is not enough, as that forces holding the invariant that provided two
+equal input keys, the same hash is returned. Of course, if we consider variable shadowing, this
+stops providing the proc--macro with unique IDs. The solution would be to either #l-enum[consider a
+  UID generator (through an external library or through a manual implementation of one such
+  algorithm,) or][consider hashing in terms of the `Span` associated with some token in the
+  `TokenStream` passed to the underlying proc--macro function signature.]
+
+This seems very much possible. Apparently, only _items_ in the Rust grammar can be considered as
+being capable of having an outer attribute applied to them, but it turns out statements, including
+`let` statements, may also have outer attributes applied to them. The extent with which some such
+outer attribute may have an effect on a statement, as per the reference's concepts of both, is not
+yet clear to me, though. The reference speaks of "applicability" when referring to the possibility
+of having outer attributes be used on a statement, including a `let` statement, but such
+"applicability" is not further developed in the context of whether it is restricting in nature or if
+it only offers an example of the uses it currently finds in the `rustc` compiler.
+
+In the case that `let` statements also applied here, then the afore mentioned idea could very well
+be feasible. Regardless of whether the type inference algorithm was run prior to forwarding the
+`TokenStream` to the proc--macro, it would still be possible for the proc--macro to attempt its own
+form of inference on the raw syntax.
+
+The proc--macro implementation, though, would be best served by an outer attribute that applied to
+some tuple--like unit struct such that the user decided on the token identifier and scope of the
+type about to be generated. Because the attribute would likely have to be the same for the purpose
+of accessibility to the user if the API ever extended beyond this basic functionality, this should
+prove to be enough. Because outer attributes (as attribute--like proc--macros are, when parsed
+post--tokenization) are expected to completely consume the `TokenStream` of the second parameter to
+the macro's underlying function signature, taking in the user type and generating all of the fields,
+as well as the required trait implementations for some generic function expecting a type
+implementing a certain trait, should make this whole idea possible.
+
+Of course, further refinements need to be made to actually come up with a macro that doesn't try to
+cover too much ground. This would likely mean considering whether it's idiomatic to expect the user
+to have some trait automatically implemented from simply invoking an attribute--like macro, and not
+from having a traditional derive macro implemented on the resulting type.
+
+*I'm going to leave this in the backburner while I continue inspecting the GraphBase codebase.*
+
+=== #smallcaps[I/O] routines (`gb_io.w`)
+
+This file contains all of the logic concerning the processing of input data files within GraphBase
+in case a user is in possesion of some file exported through the (non--kernel module) `gb_save.w`.
+This, indeed, implies that the file does not exist as a set of both input _and_ output routines, but
+rather as a set of routines to be used exclusively for both checking the contents of a file and
+getting its contents parsed into structures that GraphBase understands (though I'm not so sure on
+the latter.)
 
 #bibliography("bib.yml")
