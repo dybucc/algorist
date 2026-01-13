@@ -814,4 +814,128 @@ rather as a set of routines to be used exclusively for both checking the content
 getting its contents parsed into structures that GraphBase understands (though I'm not so sure on
 the latter.)
 
+These routines seem to provide functionality mostly specific to either the part of the GraphBase not
+implementing functionality directly interfacing with the core logic of the program, or otherwise
+interfacing with both input and output in the `gb_save.w` module. The only thing requiring a
+reimplementation in Rust is going to be the backwards--compatible interface to allow reading in
+files through the same "protocol"/"language" as the one DEK uses in the origina GraphBase. Even
+though I plan on allowing the user to automatically derive the internal types used for the whole
+codebase with an arbitrary serialization format through the `serde` crate, it's very much a
+necessity to have all `.dat` files still work with the rewrite.
+
+This would force the implementation of at least part of the non--parsing--specific routines in the
+core module. Things like the universal character set that DEK uses instead of restricting the
+symbols on the data files to either one of #l-enum[ASCII, or][ECBDIC] (or possibly another,
+completely different, post--90s character set encoding) could be replaced simply with Rust's native
+UTF--8 strings. Other elements of the interface explictily exposed to the library user should
+straight up be removed, considering a large part of the prep work prior to parsing the data files is
+tied to the limitations of C and computers as a whole back when the GraphBase was originally
+written.
+
+The system--independent encoding that DEK uses is not completely system--independent, because the
+setup routine of the `icode` array holding the numerical values to which some character maps is
+performed through a function that expects the user's machine to evaluate the numerical value of each
+one of the characters that the `imap` string (really only a string out of convenience, as each
+single--byte character is layed out as if they were contiguous elements in an array) contains. Such
+a value is assured to change in each non--ASCII or UTF--8--compliant system, and thus the actual
+offset added to the start of the `icode` array while filling it with the accompanying numerical
+value is different depending on the C runtime's evaluation of the character, which is most likely
+also tied to the character set encoding of the system in which the program is being executed.
+
+Because current--day limitations on character encodings do not radiate from this type of issues, I
+believe it best compatibility is only upkept with the parsing logic.
+
+After having read all of the docs on the parsing logic, it should be fairly simple to rewrite. The
+only parts of a `.dat` file that GraphBase expects to be conformant with a specific grammar are the
+first four lines and the last line of the file. Every line of a `.dat` file should contain at most
+79 characters, out of which the first line needs to contain the first few characters as a substring
+matching the following regex.
+
+```
+^\* File "([^"]+)".+
+```
+
+The second and third lines of the file are only matched against the same `*` character, and can thus
+and often will (at least in the GrahpBase repo data files) contain some description of the
+source/purpose of the data set, as well some licensing on how would the author like others to
+distribute the file.
+
+The fourth line of the file will include information relative to the checksum, which allows
+performing a fast computation of the "expected" contents of the input string and thus lets the
+program bail out as it is reading the buffer if the expected input does not adjust to the result of
+the checksum formula. The details of the checksum used by DEK will be commented on later. The
+specific format of the line should adjust to the following regex.
+
+```
+^\* \(Checksum parameters (\d+),(\d+)\)$
+```
+
+The first capture group in the regex corresponds with the expected number of lines after the
+checksum (fourth) line, and _not_ counting the last line (the one with no data, but special
+formatting.) The second capture group corresponds with the final "magic number" that DEK uses to
+compute the checksum from the entire contents of the file, through the formula we'll discuss after
+we're done with the grammar describing file formatting.
+
+After this line, the parsing routine simply sets up the required (global, and thus inherently
+unsafe) buffers for other routines to manually continue the parsing process on the rest of the file
+contents, making sure that there are exactly as many lines as the first checksum parameter indicated
+at the start of the file.
+
+Once the specified number of lines has been read through other routines (that are quite possibly
+going to get replaced in Rust,) another parser routine is expected to be called to check for the
+contents of the last line in the file to conform with the following regex.
+
+```
+^\* End of file "([^"]+)"$
+```
+
+We move now onto the checksum formula that DEK uses to check that the contents of the file match
+with the second parameter of the fourth line, itself corresponding with the resulting magic file
+that the library routines should have gathered from computing the (series--like) formula.
+
+The checksum is computed in terms of the formula
+
+$
+  (sum_l 2^l dot c_l) mod p, \
+  "where" p "is a large prime, and the values of" c_l "depend on DEK's character set enconding".
+$ <checksum-theory-formula>
+
+Each possible value of $c_l$ corresponds with a numerical value that maps 96 admitted characters
+into a symbol table that hashes them into the range `0..=96`. The checksum is then computed by
+reading the characters from each lines of the file and getting, on a character--by--character basis,
+the hashed numerical value added to some initial value $a$, itself starting as the old value of the
+checksum or as 0 when reading in the first line of input, in the following loop formula.
+
+$
+  a = (2 dot a + c_l) mod p.
+$
+
+This should hold so long as the string yields a non--null character, such that the value of the
+checksum is only considered to be valid if the line adjusts to the set length of 79 characters. Each
+"old checksum" is then added to the value of the newly computed temporary (upon hitting end of line
+by hitting the null terminator of the passed string) for the routine to return the new value of the
+checksum as a function of both. This is supposed to evaluate to @checksum-theory-formula once the
+entirety of the file has been read (where we define _entirety_ as all lines post the
+checksum--parameterized (fourth) line, and prior to the last `*`--prefixed line, indicating the end
+of the input data set with the same name as indicated in the first `*`--prefixed line, for a
+GraphBase--conforming data set.) The result of the last computed checksum is the one that is then
+compared with the second parameter of the fourth line of the `.dat` file.
+
+In terms of the grammar of expected data, the GraphBase makes no specfication beyond providing
+library user with three routines to either #l-enum[parse a string until meeting some other passed
+  delimitter][parse a digit in some given radix $d$, by checking through the `icode` array the
+  numerical value of the read number; This is possible because all character--encoded numbers are
+  meant to map to the same numerical values in DEK's encoding, or][read in a whole number by
+  performing an operation akin to that of reading a single digit, but instead repeating in a loop
+  and adding up the values to some temporary $k$ that is returned with the correct powers of the
+  passed radix for each digit of the processed number]. This implies that the actual data between
+the first four lines of the file and the last line is only expected to comply with the conditions on
+line length (79 characters, not accounting for newline termination,) and on character set encoding
+(96 characters including the standard 94 visual ASCII characters, the `\n` escape sequence and the
+whitespace separator.)
+
+The routines for #smallcaps[I/O] should be mostly done now. The rest of the work left on the kernel
+routines concerns itself only with the sorting module, and actually understanding the random number
+generator now that I have possession of volumes 2 and 3 of DEK's magnum opus.
+
 #bibliography("bib.yml")
