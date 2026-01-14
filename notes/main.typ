@@ -1,5 +1,7 @@
 #import "@local/typst-template:0.31.0": *
 
+// TODO: get the textual references parsed into Hayagriva with Typst references.
+
 #show: template.with(
   title: [Notes on the Stanford GraphBase],
   authorship: (
@@ -34,7 +36,7 @@ such that a different "backend" can be interchangebly used with the same generat
 
 == Kernel code files
 
-=== Random number generation (`gb_flip.w`)
+=== Random number generation (`gb_flip.w`) <random-number-module>
 
 The interface to the code is fairly simple, and is apparently based off of a publication of the name
 _Seminumerical Algorithms_. I may require this article if the engine proves too complex for me to
@@ -45,7 +47,7 @@ number generator, and a macro with which to produce a random number. Both of the
 transparent in the way the perform their internal operations, as the initial routine expects an
 explicit seed with which (for now, I believe) the program "picks" a point in its deterministic
 sequence to start off producing values. Beyond this, the macro to be called makes explicit the fact
-that the genearated numbers follow as part of, upon initialization, a predetermined series.
+that the generated numbers follow as part of, upon initialization, a predetermined series.
 
 #let period = 85 - 30
 
@@ -53,7 +55,7 @@ According to the file, the period of the numbers is of $2^(85) - 2^(30) = 2^#per
 Skiena's book, the cycling of numbers that rely on $2^32$ calls of a linear congruential engine is
 worrying. Whether the algorithm used in this file is a linear congruential engine, and whether
 $2^#period$ calls may be performed by today's computers in little more than $2^32$ calls is
-something I am not knowledgeable of.
+something I am not aware of.
 
 Further inspection of the file reveals that this seems very much like an instance of a linear
 congruential engine, where the value of a random number $n$ is determined as the function $R_n$,
@@ -61,14 +63,14 @@ such that
 
 $
   R_n = (R_(n - 55) - R_(n - 24)) mod m, \
-  "where" m "is even and" R_0, R_1, dots.c, R_54 "may contain both even and odd numbers".
+  "where" m "is even and" R_0, R_1, dots.c, R_54 "is an arithmetic series containing both even and odd numbers".
 $ <random-engine-formula>
 
 This looks a lot like the computation resolved in the example in @skiena-2020[Sec. 16.7, p. 487]. It
 computes the value of the $n$th random number from some other $n - 55$th and $n - 24$th random
 numbers. This algorithm is also noted to consider $m$ as taking on the largest value with which to
 bound the number the recurrence relation in the modulo's lhs resolves to, by taking on the $2^31$
-negative numbers available in almost all modern computers for 32--bit signed integers.
+full range of unsigned integer values.
 
 In terms of the effectiveness of such a random number generator, DEK notes that the chosen offsets,
 namely 24 and 55, should prove to be good enough for "most" applications. This likely doesn't cover
@@ -97,10 +99,10 @@ value is used as a sentinel (more on this once I get to know the code better.) T
 exist for any purpose other than allowing the user to run the macro exposed in the header file
 (which otherwise would not have any means of reaching for the array holding the core state.)
 
-Of note is that the documentation means a limitation with the `gb_next_rand` macro: There seems to
+Of note is that the documentation speaks of a limitation in the `gb_next_rand` macro: There seems to
 be a test, referred to as the _birthday spacings test_, that fails to prove this to be a decent
 enough random number generator. The solution proposed by DEK is to modify the definition of the
-macro such that instead of performing as follows,
+macro such that instead of performing the following computation,
 
 ```
 #define gb_next_rand() (*gb_fptr >= 0 ? *gb_fptr-- : gb_flip_cycle())
@@ -118,29 +120,30 @@ routine prior to continuing with the flow of execution at the macro invocation s
 possible thanks to the fact C evaluates as `void` the lhs of the comma operator and assures that the
 rhs will only run after the lhs has finished execution, such that the `gb_flip_cycle()` returns the
 last element of the stateful array after having run 110 steps of the recurrence defined in
-@random-engine-formula. For future reference, I belive it is useful that we consider the operations
+@random-engine-formula. For future reference, I belive it is useful that we inspect the operations
 performed in the macro.
 
 First, it considers whether the current value pointed to by `gb_fptr` is negative. This holds only
-for the sentinel value in the array the pointer is aliasing, and thus serves as an indication that
-it's time to run `gb_flip_cycle()` (though the workings of this are, yet again, unbeknownst to me at
-this point.) If the value yielded happens to still be within the "acceptable" range, then the
+for the sentinel value in the array the pointer it is aliasing, and thus serves as an indication
+that it's time to run `gb_flip_cycle()` (though the workings of this are, yet again, unbeknownst to
+me at this point.) If the value yielded happens to still be within the "acceptable" range, then the
 underlying value is dereferenced again prior to performing pointer arithmetic by subtracting from
 `gb_fptr`; Note how the decrement operator is used in its postfix form, such that only upon
 returning the value does the pointer's address recede back by one position in the array.
 
 The `gb_flip_cyle()` routine is said to perform 55 iterations of @random-engine-formula, aiming for
-these to be as high--speed as possible by requesting register storage of the pointers it uses for
-that. This function's body, though, is quite the sight for sore eyes; It keeps two pointers to the
-array holding the $n$ random numbers (never acting on the sentinel value at index `1`,) and performs
-_pointer address_ comparisons to consider whether the pointer at the end of each loop iteration has
-hit the address of the last element in the array. The problem here is that the exit condition of the
-loops depend on whether the pointer involved in each loop, respectively, has an address that is now
-"beyond" the address range of the array (i.e. has an address that is numerically larger than that of
-the last element of the array.) Technically, one can trust that C arrays will allocate contiguous
-memory and thus an address that is numerically larger than the address of the last element in the
-array would be outside the safe range in which to dereference the pointer so the check is certainly
-not incorrect in its logic. But this is borderline unsafe in Rust.
+these to be as high--speed as possible by requesting a register storage class specifier of the
+pointers in use. This function's body, though, is quite the sight for sore eyes; It keeps two
+pointers to the array holding the $n$ random numbers (never acting on the sentinel value at index
+`1`,) and performs _pointer address_ comparisons to consider whether the pointer at the end of each
+loop iteration has hit the address of the last element in the array. The problem here is that the
+exit condition of the loops depends on whether the pointer involved in each one, respectively, has
+an address that is now "beyond" the address range of the array (i.e. has an address that is
+numerically larger than that of the last element of the array.) Technically, one can trust that C
+stack--based arrays will allocate contiguous memory and thus an address that is numerically larger
+than the address of the last element in the array would be outside the safe range in which to
+dereference the pointer, so the check is certainly not incorrect in its logic. But this is
+borderline unsafe in Rust.
 
 Then it proceeds to "reset" the `gb_fptr` pointer by making it alias element at index `54` of the
 stateful array. I belive it resets it to the element right before the last and not to the element
@@ -148,13 +151,14 @@ before the last proper because the routine itself returns the last element in th
 And then because this function is really only used inside the `gb_next_rand` macro, it's expected to
 keep a coherent sequence of values, such that so long as we've not hit the sentinel, we return the
 dereferenced `gb_fptr`, otherwise calling `gb_flip_cycle()` and getting after its call the value at
-the very end of the array, while resetting back (as DEK says) `gb_fptr` for the next call to the
-macro to start anew.
+the very end of the array, while resetting back `gb_fptr` for the next call to the macro to start
+anew.
 
 The `gb_next_rand` macro simply computes the actual formula in @random-engine-formula with discrete
 values for the terms $R_(n - 55), R_(n - 24)$. This, though, is not a built--in modulo operation
 with the chosen $m$ ($2^(31)$), but rather a (possibly) more optimized version using a bit--wise
-#smallcaps[And] that relies on the machine using 2C bit representation its integer primitive types.
+#smallcaps[And] that relies on the machine using 2C bit representation for its integer primitive
+types.
 
 Note that, according to the docs, the `gb_flip_cycle()` routine is to be thought as reflecting the
 sequence of values, in the sense that they are now considered in reverse order to their initial
@@ -162,50 +166,50 @@ orderings. Still, a point is made about this not affecting the degree of perceiv
 returned sequence throughout calls to the `gb_next_rand` macro and subsequent "flipped cycles" upon
 hitting the sentinel value in the array with the `gb_fptr`.
 
-The initialization routine `gb_init_rand()` follows a process akin to the one detailed in the
-article mentioned by DEK (the same one as the one initially mentioned in these notes,) except that
-apparently the article bases its generator off on the assumption that only the low--order bits of
-the initial values (those variables allocated at the start of the routine) are the ones with
-pseudodeterministic significance. Then for the initial number sequence dispersion, it makes use of
-coprime numbers 21 and 55 because further increments expressed in terms of a modulo such as
-$21 mod 55$ allow for the iteration--based values in use with the initialization of the seed to be
-numbers part of the Fibonacci sequence. The reason why this is any relevant for the purposes of a
-random number generator are left to another article DEK quotes by the name (quite possibly a
-recurring publication) of _Sorting and Searching_.
+The initialization routine `gb_init_rand()` follows a process akin to the one detailed in
+_Seminumerical Algorithms_, except that apparently the summary that it references bases its
+generator off of the assumption that only the low--order bits of the initial values (those variables
+allocated at the start of the routine) are the ones with pseudodeterministic significance. Then for
+the initial number sequence dispersion, it makes use of coprime numbers 21 and 55 because further
+increments expressed in terms of a modulo such as $21 mod 55$ allow for the iteration--based values
+in use with the initialization of the seed to be numbers part of the Fibonacci sequence (this is
+commented to be an alternative method of improvement in TAoCP once the seed value has determined a
+starting point in the precomputed arithmetic series.) The reason why this is any relevant for the
+purposes of a random number generator are discussed in _Sorting and Searching_.
 
-The reason why the resulting C programs from running `ctangle` on the CWEB sources make abundant use
-of the `#line` directive is due to the fact literate programming, as conceived by DEK in WEB, may
-clip parts of a given routine or general language construct, for the sake of documenting an isolated
-"region" of it. This in turn forces the `ctangle` to parse and force a restructuring that may not be
-desired when debugging and using compiler--defined symbols when the C source file changes the
-ordering of such lines to the one expected by a compiler toolchain. This in turn implies DEK expects
-CWEB programs to be perused in their `.w` forms, and not as standalone C programs, including
-debugging.
+The reason why the resulting C programs from running `ctangle` on the #smallcaps[CWEB] sources make
+abundant use of the `#line` directive is due to the fact literate programming, as conceived by DEK
+in #smallcaps[WEB], may clip parts of a given routine or general language construct, for the sake of
+documenting an isolated "region" of it. This in turn forces `ctangle` to parse and require a
+restructuring that may not be desired when debugging and using compiler--defined symbols when the C
+source file changes the ordering of such lines to the one expected by a compiler toolchain. This in
+turn implies DEK expects #smallcaps[CWEB] programs to be perused in their `.w` forms, and not as
+standalone C programs, including debugging.
 
 Back to the initialization routine, this process mostly consists of three separate steps:
 #l-enum[Assigning to each value of the statful array a different "random" value][computing the next
   set of values that will be assigned to such elements of the array, and]["warming up" the values
   finally set in the array by calling for 275 steps of the array value--reflecting routine within
   the cycling function.]
-The reason behind the warmup cycles being run after the routine showcased in DEK's own volume 2 of
-_The Art of Computer Programming_ is due to the fact that the least 10 significant bits (the
-low--order bits we spoke of before) present a fairly predictable pattern no matter which first
-random number we ought compute. Of course, the pattern is only obvious when purposefully considering
-the bits of the numbers, even if small fluctuations may happen between the 9th bit and the 1st bit.
-The quick cycling (array member reflection) of added to the initialization routine for this pattern
-to quickly disperse, as otherwise the first few hundred runs would very much follow step no matter
-the execution conditions.
+The reason behind the warmup cycles being run after the example routine in _The Art of Computer
+Programming_ is due to the fact that the least 10 significant bits (the low--order bits we spoke of
+before) present a fairly predictable pattern no matter which first random number we compute. Of
+course, the pattern is only obvious when purposefully considering the bits of the numbers, even if
+small fluctuations may happen between the 9th bit and the 1st bit. The quick cycling (array member
+reflection) added to the initialization routine for this pattern is meant to quickly disperse
+values, as otherwise the first few hundred runs would very much follow step no matter the
+environment execution conditions.
 
 Beyond this, there's nothing else to the generator routines. The only other function present in the
 public interface of the library is one for computing a uniform, _bounded_ distribution of integers.
 As per #author(<skiena-2020>), the function $R_n$ already produces such bounded distribution, where
 the range is denoted as $[0, m)$, so it's quite possible the function presented in DEK's generator
-is not a linear congruential engine, but can be coerced into the ranges of one. The reason why the
-routine is provided instead of simply bounding the generated number by a modulo opeartion is
+is not a linear congruential engine, but can be coerced into the ranges produced by one. The reason
+why the routine is provided instead of simply bounding the generated number by a modulo operation is
 attributed to the fact that such operation would yield values smaller than or equal to $m/2$, on
-$2/3$ of most execution runs. This routine should apparently (for no further elaboration on the
-reason why is given) try to clamp the genearted value down to the specified range, while not
-consuming any more than 2 more random number generations (through the `gb_next_rand` macro.)
+$2/3$ of the runs. This function should apparently (though no further elaboration on the reason why
+is given) try to clamp the genearted value down to the specified range, while not consuming any more
+than 2 random numbers in the precomputed series (through the `gb_next_rand` macro.)
 
 This seems to work especially well for values of $m$ larger than $2^(16)$, where the trend for
 smaller values is seen more often. Because the random numbers generated within the hot loop of the
@@ -222,7 +226,7 @@ in the source code, for the purpose of generality.)
 *Pending: getting information on some omitted technicalities on the methods used for both engine
 initialization and number generation (though these should be found in DEK's own _TAoCP_).*
 
-=== Graph routines (`gb_graph.w`)
+=== Graph routines (`gb_graph.w`) <graph-routines>
 
 The file speaks of safety in terms of undefining a `min` macro that seems to exist in certain system
 headers, but it uses considerably unsafe practices for pointer arithmetic when performing traversals
@@ -934,8 +938,174 @@ line length (79 characters, not accounting for newline termination,) and on char
 (96 characters including the standard 94 visual ASCII characters, the `\n` escape sequence and the
 whitespace separator.)
 
-The routines for #smallcaps[I/O] should be mostly done now. The rest of the work left on the kernel
-routines concerns itself only with the sorting module, and actually understanding the random number
-generator now that I have possession of volumes 2 and 3 of DEK's magnum opus.
+The notes on the routines for #smallcaps[I/O] should be mostly done now. The rest of the work left
+on the kernel routines concerns itself only with the sorting module, and actually understanding the
+random number generator now that I have possession of volumes 2 and 3 of DEK's magnum opus.
+
+=== Sorting routines (`gb_sort.w`)
+
+This module holds the routines and types used to perform linked list sorting of any type involved in
+the graphbase graph primitives (so any type among `Graph`, `Vertex` or `Arc`.) The nature of these
+subroutines and types is not one where sorting is performed along with some other type--specific
+operation, but rather one where the elements being sorted are themselves abstracted as pointers to
+`node`s such that sorting is done independent of both #l-enum[the pointee's type, and][independent
+  of the actual type used for these `node`s].
+
+The reason then for using a specific type for these `node`s is because the sorting algorithm
+requires of the properties of a linked structure, whereby one instance of such _node_ DS is always
+bound to yield the "next" element in a _list_ collecting all elements under consideration for
+sorting purposes. But the overarching container with pointers to each of these elements isn't
+required to hold a specific type of pointer; instead, it considers pointers (of pointee `char` type,
+because `void` wasn't legal C when GraphBase was written) to implicitly denote to the library user
+that for the (sorting) routines to work correctly the minimum "interface" for the sorted--through
+elements is supposed to conform with the fields in the `node` type, these being the only ones used
+in the GraphBase sorting routines.
+
+In terms of the sorting algorithm, this uses radix sort with radix 256. The details of this
+algorithm in conjunction with the linear congruential engine used for random number generation
+(under `gb_rand.w`, and explained in @random-number-module) are still something I'm not completely
+confident I understand, so an explanation will not be given for the time being.
+
+I will proceed now to explain the logic involved in the radix sort algorithm used in the
+computations by DEK. The algorithm, as explained in _Searching and Sorting_, considers a set of
+records $n$ that is equal to the total amount of numbers to be sorted over. This abstraction is
+necessary because each of those records keeps both a `key` field, as well as a `link` field, such
+that in actuality it is a form of (primitve, singly) linked list that, initially, has all elements'
+`link` field pointing to `NULL`.
+
+This abstraction is provided by the `node` structure that is considered across the loops performing
+the logic in the algorithm. Then, it keeps track of a collection of as many queues as the numerical
+value of the radix for each of those digits is. Then, for as many iterations as the number of digits
+in the largest of the `node`s under consideration, the algorithm will consider the iteration number
+as the queue to operate on, and subsequently proceed to add the `node`s whose digit at the position
+currently under consideration (the iteration number) is equal to the iteration number.
+
+It will do this consistently for each of the records (the `node`s abstracted as numbers,) and then
+it will call another subroutine that will link the top elements of each queue with the bottom
+element of the queue following that one queue, where the concept of order between queues is upkept
+thanks to the contiguous collection within which they themselves are contained. This step allows the
+algorithm to repeat the above steps (the steps explained in the previous paragraph) on the next
+least significant digit of the numbers, producing a completely different order, but this time not
+considering the records in the provided order, but rather in the order that they were left on
+(recall they are really nodes in a linked list) after performing the above subroutine to connect the
+top record of each queue with the bottom record of the next queue.
+
+Repeating this for as many digits as the largest number in the collection being sorted has, allows a
+"progressive" form of implementation.
+
+From looking into the implementation of radix sort in #smallcaps[CLRS], it seems the above
+explanation applies to the method followed by DEK in TAoCP, but it isn't necessarily unique nor does
+it strike me as any better than the proposed approach in the former reference. This latter algorithm
+simply considers each of the digits of the multiset of numbers in the input collection, and proceeds
+to apply some other stable sorting algorithm only on the digit under consideration in the current
+iteration. This keeps repeating itself for as many times as there are digits in the largest number
+in the collection, padding numbers with a smaller amount of digits with zeroes on the left.
+
+The algorithm of choice as per #smallcaps[CLRS] for stable sorting each digit is _counting sort_.
+
+The routine involved here is not in--place so there are, at least in theory, two more memory
+allocations done on each call to counting sort. This sorting algorithm allocates an initial array
+with as many elements as the numerical upper bound on the input array is, plus 1; that is to say, it
+allocates memory for as many elements, plus 1, as the largest contained number in the array to be
+sorted. After this, it performs an initial, linear cost pass over the input array to consider the
+amount of times the index of each element in the newly--allocated array repeats itself in the input
+array to be sorted. The new array thus serves the purpose of a frequency table akin to that used
+when building and operating with a Fenwick tree, such that the index serves as indication of the
+element in the input array, and the actual element in the frequency table provides the amount of
+times that one number is seen (repeated) in the input array. Then the new array is traversed again
+in another linear cost operation (this time dependent on the largest value contained in the input
+array,) and proceeds to update the frequencies of each element by adding its current frequency to
+the frequency of the element that came before it (thus the non--assymptotic running time cost is not
+truly linear, as it goes from the second element forward.) By the time this process ends, the new
+array contains, at each index (recall the indices indicated the actual values contained in the input
+array) the amount of elements that are smaller than it. This information implicitly encodes the
+ordering of the element with the same index as the element with the same value as the index in the
+frequency table, and so the only thing left is to traverse the length of the original array, and
+index each of the elements of the frequency table with the yielded values of the input array, to get
+the position in which one must put the element indexed at the original input array into another
+output array (this is the second mandatory allocation.)
+
+Because I've yet to discuss the workings of the specific implementation that DEK uses for the
+GraphBase sorting module, I've not yet decided on whether I should use the approach indicated in
+_Sorting and Searching_, or otherwise follow through with the above approach. In terms of DS layout,
+it definetly seems like the former is better, but this is only a "feeling."
+
+From rereading the initial documentation comments on the module, it seems the whole purpose of this
+sorting routine is not to perform a stable sort, but rather to purposefully shuffle elements that
+compare equal in random ways (i.e. to perform an intentional unstable sort by randomly laying out
+elements with equal partial ordering,) while still ending the routine with an increasing sequence of
+elements layed out in the same linked list as the one exposed in _Sorting and Searching_.
+
+For that, DEK expects the users of the library functions to provide a structure that aligns with the
+requirements of the example structure `node` (that we already spoke of when commenting algorithm R
+on TAoCP, Section 5.2.5.) Because of `struct` layout constraints on C compilers (except when using
+`#pragma`s to change the default behavior,) the fields used in the sorting routine
+(`gb_listsort()`,) namely the `key` and `link` fields, both standing in for the fields of the same
+name as the one in algorithm r, ought be the first two fields in the structures that the users
+provide to the library function. This limitation could be easily circumvented through codegen in
+Rust, and it would likely not affect compile--times that much, considering they only apply on a
+case--by--case basis (as some algorithm in need of sorting a key--representable type sees fit.)
+
+To this extent, this single routine may be replaced with a regular, contiguous heap--memory
+allocated container like Rust's `Vec`, and instead of performing radix sort, performing a regular
+stable sort with control over how does the comparison function resolves through a closure. This
+should allow the closure within the stable sort to perform the same random shuffling of values that
+evaluate to partial equality, and for any other value, resolve to the built--in total ordering of
+integral values.
+
+The first part of the routine performing the initialization step R1 in algorithm 5.2.5R, may be
+potentially unsafe if the next returned random value covers the full unsigned integer range, namely
+$2^31$, because 23 right--shifting operations are not enough to explicitly cover the range 0--255,
+which is the only valid range for the array that is being indexed with the returned (and post--bit
+shifted value of the linear congruential random number engine.) The range covered is $[0, 256]$,
+when to index the array, it ougth be $[0, 256)$ (note it's closed on the end range of the segment.)
+
+The last two passes of the algorithm are based on the #smallcaps[MSD]--pass idea proposed at the end
+of the Section 5.2.5 in TAoCP. They follow the same principle as the one used for #smallcaps[LSD]
+passes. All passes also base their behavior off of the assumption that the keys will only ever hold
+some number with 6 digits tops, as the range of values for $p$ is $[0, 6]$ (where $p$ here has the
+same meaning as the one adscribed in TAoCP;) This further constraints the possibilities of library
+users, as they are already forced into using 31--bit precission integral values.
+
+This module will likely also be completely rewritten, as the only thing that it attempts to do
+efficently is to perform stable sorting with the effects of unstable sorting. To that extent, it
+uses radix sort with the same linked list--like, and queue--like behavior as proposed in TAoCP, but
+on the first two iterations of $p$ considers random shuffled keys, which are then reordered into the
+desired final ordering. The goal is to compute the partial order of nodes in terms of their `key`
+fields to produce an increasing sequence in a contiguous container, while randomly shuffling values
+that compare equal with respect to their `key` fields. To allow further flexibility to library
+users, the module should be refactored into using a trait--based implementation with the same
+codegen idea as proposed with the `util` unions (commented at the end of @graph-routines) in the
+graph primitives. This should allow deriving the `PartialOrd` trait such that the satellite data
+remaining on the graph type determines the final ordering of the elements.
+
+This should about do it with the `gb_sort.w` module. Before moving on to the generative routines, I
+believe it best to revisit the `gb_rand.w` module, as I didn't have the bibliographic references the
+author used to implement the linear congruential engine when I documented the codebase.
+
+On the comments made before about the potential unsafety of the sorting routines when calling the
+random number generator routine `gb_next_rand()`, the `gb_flip.w` module does mention that the range
+of returned numbers is bound to that of _signed_, and not _unsigned_ integral values; contrary to
+what I mentioned, which included the range $2^31$, the real range ends at $2^31 - 1$, which does
+mean the eight most significant bits extracted on the first two runs of the partioning scheme are
+just fine, as the maximum value they map to is `0x0FFFFFF`, which when shifted right 23 bits, should
+yield a number in the expected range $[0, 256)$.
+
+=== Random number generation revisitted (`gb_flip.w`)
+
+The section on TAoCP referenced in the docs for this module refers to older but analogous content to
+the one included in Skiena's catalogue of random number generators, under chapter 16 for numerical
+algorithms. The presented results are subpar compared with those presented by the more modern linear
+congruential engine formulas and heuristics discussed by the latter. Chief among the deficiencies of
+DEK's methods is the period of the engine; it barely goes above $2^55$ on runs that don't hit the
+limitations commented on both the module #smallcaps[CWEB] file and @random-number-module concerning
+the birthday spacings test. In contrast, Skiena presents multiple better solutions known today, like
+the Mersenne Twister engine with a far larger period ($2^(19937) - 1$) and alternative
+implementations depending on the machine's word length.
+
+Additionally, the cycling computations that DEK advises for users of the library that require a
+certain result against the afore mentioned test, is not encouraged in _Seminumerical Algorithms_
+because apparently it doesn't solve other deffects in the predictability of generated sequences for
+runs beyond the hundreds of millions.
 
 #bibliography("bib.yml")
