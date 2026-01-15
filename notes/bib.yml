@@ -2,6 +2,7 @@ skiena-2020:
   type: Book
   title: "The Algorithm Design Manual"
   author: "Skiena, Steven"
+  edition: 3
 knuth-graphbase:
   type: Book
   title: "The Stanford GraphBase"
@@ -16,3 +17,30 @@ ds-handbook-graphs:
     type: Book
     title: "Handbook of Data Structures and Applications"
   author: "Deo, Narsingh"
+taocp-2:
+  type: Book
+  title: "Seminumerical Algorithms"
+  parent:
+    type: Book
+    title: "The Art of Computer Programming"
+    author: "Knuth, Donald Ervin"
+  volume: 2
+  edition: 3
+taocp-3:
+  type: Book
+  title: "Sorting and Searching"
+  parent:
+    type: Book
+    title: "The Art of Computer Programming"
+    author: "Knuth, Donald Ervin"
+  volume: 3
+  edition: 2
+clrs:
+  type: Book
+  title: "Introduction to Algorithms"
+  author:
+    - "Cormen, Thomas H."
+    - "Leiserson, Charles E."
+    - "Rivest, Ronald R."
+    - "Stein, Clifford"
+  edition: 4

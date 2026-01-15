@@ -1,7 +1,5 @@
 #import "@local/typst-template:0.31.0": *
 
-// TODO: get the textual references parsed into Hayagriva with Typst references.
-
 #show: template.with(
   title: [Notes on the Stanford GraphBase],
   authorship: (
@@ -224,7 +222,7 @@ that the routine returns the "clamped" value $n mod m$ (I use $n$ instead of the
 in the source code, for the purpose of generality.)
 
 *Pending: getting information on some omitted technicalities on the methods used for both engine
-initialization and number generation (though these should be found in DEK's own _TAoCP_).*
+initialization and number generation (though these should be found in @taocp-2).*
 
 === Graph routines (`gb_graph.w`) <graph-routines>
 
@@ -945,106 +943,128 @@ random number generator now that I have possession of volumes 2 and 3 of DEK's m
 === Sorting routines (`gb_sort.w`)
 
 This module holds the routines and types used to perform linked list sorting of any type involved in
-the graphbase graph primitives (so any type among `Graph`, `Vertex` or `Arc`.) The nature of these
-subroutines and types is not one where sorting is performed along with some other type--specific
-operation, but rather one where the elements being sorted are themselves abstracted as pointers to
-`node`s such that sorting is done independent of both #l-enum[the pointee's type, and][independent
-  of the actual type used for these `node`s].
+the GraphBase graph primitives (so any type among `Graph`, `Vertex` or `Arc`.) The nature of these
+subroutines is not one where sorting is performed along with some other type--specific operation,
+but rather one where the elements being sorted are themselves abstracted as pointers to `node`s such
+that sorting is done independent of both #l-enum[the pointee's type, and][independent of the actual
+  type used for these `node`s].
 
-The reason then for using a specific type for these `node`s is because the sorting algorithm
-requires of the properties of a linked structure, whereby one instance of such _node_ DS is always
-bound to yield the "next" element in a _list_ collecting all elements under consideration for
-sorting purposes. But the overarching container with pointers to each of these elements isn't
-required to hold a specific type of pointer; instead, it considers pointers (of pointee `char` type,
-because `void` wasn't legal C when GraphBase was written) to implicitly denote to the library user
-that for the (sorting) routines to work correctly the minimum "interface" for the sorted--through
-elements is supposed to conform with the fields in the `node` type, these being the only ones used
-in the GraphBase sorting routines.
+The reason then for using a specific type (`node`) owes to the fact the sorting algorithm requires
+of the properties of a linked structure, whereby one instance of such a _node_ is always bound to
+yield the "next" element in a _list_ collecting all elements under consideration for sorting
+purposes. But the overarching container with pointers to each of these elements isn't required to
+hold a specific type of pointer; instead, it considers pointers (of pointee `char` type, because
+`void` wasn't legal C when GraphBase was written) to implicitly denote to the library user that for
+the (sorting) routines to work correctly the minimum "interface" for the sorted--through elements is
+supposed to have as its first two fields the same two fields in the `node` type, these being the
+only ones used in the GraphBase sorting routines.
 
-In terms of the sorting algorithm, this uses radix sort with radix 256. The details of this
-algorithm in conjunction with the linear congruential engine used for random number generation
-(under `gb_rand.w`, and explained in @random-number-module) are still something I'm not completely
-confident I understand, so an explanation will not be given for the time being.
+In terms of the actual sorting algorithm, it's radix sort with radix 256, and 6 digits under
+consideration. The details of this algorithm in conjunction with the linear congruential engine used
+for random number generation (under `gb_rand.w`, and commented on in @random-number-module) are
+still something I'm not completely confident I understand.
 
-I will proceed now to explain the logic involved in the radix sort algorithm used in the
-computations by DEK. The algorithm, as explained in _Searching and Sorting_, considers a set of
-records $n$ that is equal to the total amount of numbers to be sorted over. This abstraction is
-necessary because each of those records keeps both a `key` field, as well as a `link` field, such
-that in actuality it is a form of (primitve, singly) linked list that, initially, has all elements'
-`link` field pointing to `NULL`.
+I will proceed first with the logic involved in the form of radix sort used by DEK. The algorithm,
+as explained in @taocp-3, considers a set of records $n$ that is equal to the total amount of
+numbers to be sorted over. This abstraction is necessary because each of those records keeps both a
+`key` field, as well as a `link` field, such that in actuality it is a form of (primitve, singly)
+linked list that, initially, has every single element's `link` field pointing to `NULL`.
 
-This abstraction is provided by the `node` structure that is considered across the loops performing
-the logic in the algorithm. Then, it keeps track of a collection of as many queues as the numerical
-value of the radix for each of those digits is. Then, for as many iterations as the number of digits
-in the largest of the `node`s under consideration, the algorithm will consider the iteration number
-as the queue to operate on, and subsequently proceed to add the `node`s whose digit at the position
-currently under consideration (the iteration number) is equal to the iteration number.
+This abstraction is provided by the example `node` structure, itself having the exact same `key` and
+`link` fields as the ones #author(<taocp-3>) exemplifies in @taocp-3. Then, it keeps track of a
+collection of as many queues as the numerical value of the radix for each of those digits is.
+Following, for as many iterations as the number of digits in the largest of the `node`'s `key`s
+under consideration, the algorithm will consider the iteration number as the queue to operate on,
+and subsequently proceed to add the `node`s whose (`key`) digit at the position currently under
+consideration (the iteration number) is equal to the iteration number. This introduces the second
+constraint imposed by these sorting routines; The structure in use (in place of the example `node`)
+must additionally employ 32--bit unsigned integers in its `key` field (though this is also due to
+the range of the random number generator used for the first two passes of radix sort.)
 
-It will do this consistently for each of the records (the `node`s abstracted as numbers,) and then
-it will call another subroutine that will link the top elements of each queue with the bottom
-element of the queue following that one queue, where the concept of order between queues is upkept
-thanks to the contiguous collection within which they themselves are contained. This step allows the
-algorithm to repeat the above steps (the steps explained in the previous paragraph) on the next
-least significant digit of the numbers, producing a completely different order, but this time not
+It will do this consistently for each of the records (the `node`'s numerical `key`s,) and then it
+will call another subroutine (@taocp-3[Alg. 5.2.5H]) that will link the top elements of each queue
+with the bottom element of the queue following that one queue, where the concept of order between
+queues is upkept thanks to the contiguous collection within which the queues themselves are
+contained. This step allows the algorithm to repeat the above steps (the steps explained in the
+previous paragraph) on the next least significant digit of the numbers (so starting from the least
+significant digit, it moves to the right,) producing a completely different order, but this time not
 considering the records in the provided order, but rather in the order that they were left on
 (recall they are really nodes in a linked list) after performing the above subroutine to connect the
 top record of each queue with the bottom record of the next queue.
 
-Repeating this for as many digits as the largest number in the collection being sorted has, allows a
-"progressive" form of implementation.
+Repeating this for as many digits as the largest `key` in the collection being sorted has, allows a
+"progressive" form of implementation, bounded in the `gb_sort.w` module at 6 passes.
 
-From looking into the implementation of radix sort in #smallcaps[CLRS], it seems the above
-explanation applies to the method followed by DEK in TAoCP, but it isn't necessarily unique nor does
-it strike me as any better than the proposed approach in the former reference. This latter algorithm
-simply considers each of the digits of the multiset of numbers in the input collection, and proceeds
-to apply some other stable sorting algorithm only on the digit under consideration in the current
+From looking into the implementation of radix sort in @clrs, it seems the above explanation applies
+to the method followed by DEK in @taocp-3, but it isn't necessarily unique nor does it strike me as
+any better than the proposed approach in the former reference. #author(<clrs>) algorithm simply
+considers each of the digits of the multiset of numbers in the input collection, and proceeds to
+apply some other stable sorting algorithm only on the digit under consideration in the current
 iteration. This keeps repeating itself for as many times as there are digits in the largest number
-in the collection, padding numbers with a smaller amount of digits with zeroes on the left.
+in the collection, padding with left zeroes numbers with a smaller amount of digits.
 
-The algorithm of choice as per #smallcaps[CLRS] for stable sorting each digit is _counting sort_.
+The algorithm of choice as per @clrs for stable sorting each digit is _counting sort_. Following, I
+provide a summary on its workings, based off of the explanation given by #author(<clrs>).
 
 The routine involved here is not in--place so there are, at least in theory, two more memory
-allocations done on each call to counting sort. This sorting algorithm allocates an initial array
-with as many elements as the numerical upper bound on the input array is, plus 1; that is to say, it
-allocates memory for as many elements, plus 1, as the largest contained number in the array to be
-sorted. After this, it performs an initial, linear cost pass over the input array to consider the
-amount of times the index of each element in the newly--allocated array repeats itself in the input
-array to be sorted. The new array thus serves the purpose of a frequency table akin to that used
-when building and operating with a Fenwick tree, such that the index serves as indication of the
-element in the input array, and the actual element in the frequency table provides the amount of
-times that one number is seen (repeated) in the input array. Then the new array is traversed again
-in another linear cost operation (this time dependent on the largest value contained in the input
-array,) and proceeds to update the frequencies of each element by adding its current frequency to
-the frequency of the element that came before it (thus the non--assymptotic running time cost is not
-truly linear, as it goes from the second element forward.) By the time this process ends, the new
-array contains, at each index (recall the indices indicated the actual values contained in the input
-array) the amount of elements that are smaller than it. This information implicitly encodes the
+allocations performed on each call to counting sort. The initially allocated array has as many
+elements as the numerical upper bound on the input array, plus 1; That is to say, it allocates
+memory for as many elements, plus 1, as the largest contained number in the array to be sorted. This
+procedure is thus best used when it is known in advance that the largest number contained in the
+input array is the number of elements in the array or ever so slightly larger than it.
+
+After this, it performs an initial, linear cost pass over the input array to consider the amount of
+times the index of each element in the newly--allocated array repeats itself in the input array to
+be sorted. The new array thus serves the purpose of a frequency table akin to that used when
+building and operating with a Fenwick tree (also known as a Binary Indexed tree,) such that the
+index serves as indication of the element in the input array, and the actual element in the
+frequency table provides the amount of times that one number is seen (repeated) in the source
+collection. Then the new array is traversed again in another linear cost operation (this time
+dependent on the largest value contained in the input array,) and proceeds to update the frequencies
+of each element by adding its current frequency to the frequency of the element that came before it
+(even though the assymptotic cost is linear in nature, the computation involved starts at the second
+element, because the first element has no peer preceding it and thus has the "right" frequency
+assigned to it during construction of the frequency table.) Once this is done, the new array
+contains, at each index (recall the indices indicated the actual values contained in the input
+array) the amount of elements that are smaller than it (an implicit consequence is that even for
+indices referring to numbers not appearing in the input array, if some _smaller_ number _did_ appear
+in the array, they would have its frequency added to it.) This information already encodes the
 ordering of the element with the same index as the element with the same value as the index in the
 frequency table, and so the only thing left is to traverse the length of the original array, and
 index each of the elements of the frequency table with the yielded values of the input array, to get
 the position in which one must put the element indexed at the original input array into another
-output array (this is the second mandatory allocation.)
+output array (this output array is the second allocation that makes this algorithm non--in--place.)
 
 Because I've yet to discuss the workings of the specific implementation that DEK uses for the
 GraphBase sorting module, I've not yet decided on whether I should use the approach indicated in
-_Sorting and Searching_, or otherwise follow through with the above approach. In terms of DS layout,
-it definetly seems like the former is better, but this is only a "feeling."
+@taocp-3, or otherwise follow through with the above approach. In terms of DS layout, it definitely
+seems like the former is better, but this is only a "gut feeling."
 
 From rereading the initial documentation comments on the module, it seems the whole purpose of this
 sorting routine is not to perform a stable sort, but rather to purposefully shuffle elements that
 compare equal in random ways (i.e. to perform an intentional unstable sort by randomly laying out
-elements with equal partial ordering,) while still ending the routine with an increasing sequence of
-elements layed out in the same linked list as the one exposed in _Sorting and Searching_.
+elements with a equal partial ordering relation,) while still ending the routine with an increasing
+sequence of elements layed out in the same linked list as the one exposed in @taocp-3.
 
 For that, DEK expects the users of the library functions to provide a structure that aligns with the
-requirements of the example structure `node` (that we already spoke of when commenting algorithm R
-on TAoCP, Section 5.2.5.) Because of `struct` layout constraints on C compilers (except when using
-`#pragma`s to change the default behavior,) the fields used in the sorting routine
-(`gb_listsort()`,) namely the `key` and `link` fields, both standing in for the fields of the same
-name as the one in algorithm r, ought be the first two fields in the structures that the users
-provide to the library function. This limitation could be easily circumvented through codegen in
-Rust, and it would likely not affect compile--times that much, considering they only apply on a
-case--by--case basis (as some algorithm in need of sorting a key--representable type sees fit.)
+requirements of the example structure `node` (that we already spoke of when commenting @taocp-3[Alg.
+  5.2.5R].) Because of `struct` layout constraints in C compilers (except when using `#pragma`s to
+change field packing behavior,) the fields used in the sorting routine (`gb_listsort()`,) namely
+`key` and `link`, ought be the first two fields in the structures that the users provide to the
+library function. This limitation could be easily circumvented through codegen in Rust, and it would
+likely not affect compile--times. This is feasible because DEK expects this sorting algorithm to be
+used selectively by certain algorithms that require adscribing order (or possible disorder if all
+`key`s' partial order compares equal) on some input data set, like the words contained in the
+`words.dat` file; thus, the macro itself would be used on a case--by--case, (hopefully)
+fine--grained basis by library users. This may not be possible, based on the functions provided in
+the standard library for sorting elements in slices (`sort*()` and `sort_unstable*()`.) The variants
+of these functions that accept a closure expect to have an `Ordering` returned, which means that
+there must be at least a binary weak ordering relation between elements. If I try to manipulate the
+output based on a precomputed result of the `partial_cmp()` function, I would run into the issue of
+having to force a non--equal result between elements that, `key`--wise, would compare equal. Fast
+forward to the end of the sorting algorithm, and I would end up with a tangled mess of unordered
+`key`s, that have taken into account satellite data ordering as its primary resolution strategy,
+instead of `key` ordering.
 
 To this extent, this single routine may be replaced with a regular, contiguous heap--memory
 allocated container like Rust's `Vec`, and instead of performing radix sort, performing a regular
@@ -1053,59 +1073,105 @@ should allow the closure within the stable sort to perform the same random shuff
 evaluate to partial equality, and for any other value, resolve to the built--in total ordering of
 integral values.
 
-The first part of the routine performing the initialization step R1 in algorithm 5.2.5R, may be
-potentially unsafe if the next returned random value covers the full unsigned integer range, namely
-$2^31$, because 23 right--shifting operations are not enough to explicitly cover the range 0--255,
-which is the only valid range for the array that is being indexed with the returned (and post--bit
-shifted value of the linear congruential random number engine.) The range covered is $[0, 256]$,
-when to index the array, it ougth be $[0, 256)$ (note it's closed on the end range of the segment.)
+The first part of the routine performing the initialization step *R1* in @taocp-3[Alg. 5.2.5R], may
+be potentially unsafe if the next returned random value covers the full unsigned integer range,
+namely $2^31$, because 23 right--shifting operations are not enough to explicitly cover the range
+0--255, which is the only valid range for the array that is being indexed with the returned (and
+post--bit shifted value of the linear congruential random number engine.) The range covered is
+$[0, 256]$, but it ougth be $[0, 256)$ (note it's closed on the end range of the segment) to index
+the array without an out--of--bounds miss.
 
 The last two passes of the algorithm are based on the #smallcaps[MSD]--pass idea proposed at the end
-of the Section 5.2.5 in TAoCP. They follow the same principle as the one used for #smallcaps[LSD]
+of the @taocp-3[Sec. 5.2.5]. They follow the same principle as the one used for #smallcaps[LSD]
 passes. All passes also base their behavior off of the assumption that the keys will only ever hold
 some number with 6 digits tops, as the range of values for $p$ is $[0, 6]$ (where $p$ here has the
-same meaning as the one adscribed in TAoCP;) This further constraints the possibilities of library
-users, as they are already forced into using 31--bit precission integral values.
+same meaning as the one adscribed by #author(<taocp-3>).)
 
 This module will likely also be completely rewritten, as the only thing that it attempts to do
-efficently is to perform stable sorting with the effects of unstable sorting. To that extent, it
-uses radix sort with the same linked list--like, and queue--like behavior as proposed in TAoCP, but
-on the first two iterations of $p$ considers random shuffled keys, which are then reordered into the
-desired final ordering. The goal is to compute the partial order of nodes in terms of their `key`
-fields to produce an increasing sequence in a contiguous container, while randomly shuffling values
-that compare equal with respect to their `key` fields. To allow further flexibility to library
-users, the module should be refactored into using a trait--based implementation with the same
-codegen idea as proposed with the `util` unions (commented at the end of @graph-routines) in the
-graph primitives. This should allow deriving the `PartialOrd` trait such that the satellite data
-remaining on the graph type determines the final ordering of the elements.
+efficently is to perform stable sorting with the effects of unstable sorting, making sure such
+effects are as non--deterministic in nature as possible. To that extent, it uses radix sort with the
+same linked list--like, and queue--like behavior as proposed in @taocp-3, but on the first two
+iterations of $p$ considers randomly shuffled keys, which are then reordered into the desired
+layout. The goal is to compute the partial order of nodes in terms of their `key` fields to produce
+an increasing sequence in a contiguous container, while randomly shuffling values that compare
+equal. To allow further flexibility to library users, the module should be refactored into using a
+trait--based implementation with the same codegen idea as proposed with the `util` unions (commented
+at the end of @graph-routines) in the graph primitives. This should allow deriving the `PartialOrd`
+trait such that the satellite data remaining on the graph type determines the final ordering of the
+elements.
 
 This should about do it with the `gb_sort.w` module. Before moving on to the generative routines, I
 believe it best to revisit the `gb_rand.w` module, as I didn't have the bibliographic references the
-author used to implement the linear congruential engine when I documented the codebase.
-
-On the comments made before about the potential unsafety of the sorting routines when calling the
-random number generator routine `gb_next_rand()`, the `gb_flip.w` module does mention that the range
-of returned numbers is bound to that of _signed_, and not _unsigned_ integral values; contrary to
-what I mentioned, which included the range $2^31$, the real range ends at $2^31 - 1$, which does
-mean the eight most significant bits extracted on the first two runs of the partioning scheme are
-just fine, as the maximum value they map to is `0x0FFFFFF`, which when shifted right 23 bits, should
-yield a number in the expected range $[0, 256)$.
+author used to implement the linear congruential engine when I commented on the codebase.
 
 === Random number generation revisitted (`gb_flip.w`)
 
-The section on TAoCP referenced in the docs for this module refers to older but analogous content to
-the one included in Skiena's catalogue of random number generators, under chapter 16 for numerical
-algorithms. The presented results are subpar compared with those presented by the more modern linear
-congruential engine formulas and heuristics discussed by the latter. Chief among the deficiencies of
-DEK's methods is the period of the engine; it barely goes above $2^55$ on runs that don't hit the
-limitations commented on both the module #smallcaps[CWEB] file and @random-number-module concerning
-the birthday spacings test. In contrast, Skiena presents multiple better solutions known today, like
-the Mersenne Twister engine with a far larger period ($2^(19937) - 1$) and alternative
-implementations depending on the machine's word length.
+On the discussion about the potential unsafety of the sorting routines when calling the random
+number generator routine `gb_next_rand()`, the `gb_flip.w` module does mention that the range of
+returned numbers is bound to that of _signed_, and not _unsigned_ integral values; Contrary to what
+I said, which included the range $2^31$, the real range ends at $2^31 - 1$, which does mean the
+eight most significant bits extracted on the first two runs of the partioning scheme are just fine,
+as the maximum value they map to is `0xFF`, which when shifted right 23 bits, should yield a number
+in the expected range $[0, 256)$.
+
+@taocp-3[Sec. 3.6] refers to older but analogous content to the one included in #author(
+  <skiena-2020>,
+)'s catalogue under @skiena-2020[Sec. 16.3]. The presented results are subpar compared with those
+presented by the more modern linear congruential engine formulas and heuristics discussed by the
+latter. Chief among the deficiencies of DEK's methods is the period of the engine; $2^55$ on runs
+that don't hit the limitations commented on both the module file and @random-number-module
+concerning the birthday spacings test. In contrast, #author(<skiena-2020>) presents multiple better
+solutions known today, like the _Mersenne Twister_ engine with a far larger period ($2^(19937) - 1$)
+and alternative implementations depending on the machine's word length.
 
 Additionally, the cycling computations that DEK advises for users of the library that require a
-certain result against the afore mentioned test, is not encouraged in _Seminumerical Algorithms_
-because apparently it doesn't solve other deffects in the predictability of generated sequences for
-runs beyond the hundreds of millions.
+certain result against the afore mentioned test, is not encouraged in @taocp-2 because apparently it
+doesn't solve other deffects related to the predictability of generated sequences.
+
+The random number generator module is getting completely replaced with another trait--based
+interface requiring of whichever methods one may need to compute random numbers in any general
+application under consideration within GraphBase. For testing purposes during development, the
+`rand` crate will be used instead. Once I get everything working, I may consider revisitting the
+algorithm in the original GraphBase and providing it as a `ClassicBackend` for the random number
+generation #smallcaps[API].
+
+=== Sorting routines revisitted (`gb_sort.w`)
+
+Future efforts should focus on better understanding the sorting module, as the method explained in
+@taocp-3[Sec. 5.2.5] is clear, but the feasibility of implementing it in conjunction with a random
+number generator is not something I completely understand just yet. The purpose of this second
+exploration of the module should be evaluating whether it is feasible to provide the same
+functionality with a different implementation I understand better.
+
+Upon further inspection of the documentation, it seems the module is not as limited as I initially
+believed it to be. It turns out the array `gb_sorted[]` exposed as part of the public interface is
+actually made up of linked lists, and not of the final records themselves as they are presented in
+@taocp-3[Alg. 5.2.5R, Alg. 5.2.5H]. Indeed, in the example code snippet given at the start of the
+module, the initial traversal over elements of the array is followed by a nested traversal through
+the nodes of each linked list, such that for each of the 127 linked DSs, a single pointer is stored
+to the starting node, that itself will hold a pointer to the next node in the corresponding list.
+
+This would imply that if `gb_sorted[]` is to reflect the sorted order of all of the records (to use
+the terminology in @taocp-3[Sec. 5.2.5],) such that the linked list indexed at position 0 holds the
+first $n$ smallest elements of the original linked list, then the initial partitioning is meant for
+both random shuffling and to separate all such elements in 256 linked lists, each an element of
+`alt_sorted[]`.
+
+Another conclusion I've reached is that random shuffling is performed on a best--effort basis, as
+it's not enforced throughout sorting, but rather during the "initialization" (partitioning) steps.
+DEK then puts his hopes into the initial sequence being sufficently shuffled for the next 4 passes
+of radix sort to do their job just fine with respect to the `key`s, such that the satellite data of
+`key`s that compare equal is left in the same position as given post--random shuffling thanks to the
+stability of radix sort.
+
+Two paragraphs above, the use of a general bound $n$ for the number of elements in one of the linked
+lists in the sorted array of linked lists was not defined. To determine the index of the specific
+linked list in which a `key` or `key` range lies in, one may consider the following bounds on the
+value of the `key`(s) in relation with the valid range of indices into the array.
+
+$
+  "For index" 0 <= j < 256, "linked list" #raw("gb_sorted[")j#raw("]")
+  "contains the range of" #raw("key")"s" [j dot 2^24 <= #raw("key") < (j + 1) dot 2^24].
+$
 
 #bibliography("bib.yml")
