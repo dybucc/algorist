@@ -20,6 +20,7 @@ ds-handbook-graphs:
 taocp-2:
   type: Book
   title: "Seminumerical Algorithms"
+  author: "Knuth, Donald Ervin"
   parent:
     type: Book
     title: "The Art of Computer Programming"
@@ -29,6 +30,7 @@ taocp-2:
 taocp-3:
   type: Book
   title: "Sorting and Searching"
+  author: "Knuth, Donald Ervin"
   parent:
     type: Book
     title: "The Art of Computer Programming"
