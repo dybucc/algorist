@@ -486,6 +486,9 @@ approach, though, presents three issues.
   as one would expect. This would fit the bill quite well with the allocation-heavy behavior of
   graph construction routines, as those are the ones that most often require of new heap memory.
 
+*I leave these ideas in the backburner, but it's quite likely this specially isn't getting into
+`0.1`.*
+
 There's also a function to quickly deallocate the `Area`s that some global static handle kept track
 of through the linked `next` fields of the underlying type, but that's irrelevant for the Rust
 rewrite.
@@ -506,50 +509,47 @@ number of vertices as well as the number of arcs in the graph, and two `Area`s f
 allocation of `Arc`s and `Vertex`s, as well as a auxiliary storage allocation for some generative
 routines.
 
-The `util` unions on the graph are very much akin to those found in the `Vertex` structures except
-that the `Graph` type also holds a discriminant character array indicating the purpose of each of
-those utility fields. This is truly a showcase of the severe limitations and safety issues with
-C-style unions, and likely also the reason why the Rust rewrite will not follow that approach. As a
-consequence, even though it's a string field to C compilers, this is in actuality a purely
-single-character based array where each element denotes, in uppercase ASCII alphabetic symbols, the
-purpose of the utility field at any given time (thus this acts as a (possible) warning to library
-users against the use of such fields without proper modification of the character discriminant, if
-the graph is to be used along with the exporting facilities the kernel routines provide for
-interaction with outside applications/libraries.) The characters in question follow the same
-semantics as the names in the union declaration itself, such that for each of the possible fields,
-it considers the complete set of union fields, and additionally a character `Z` to indicate that the
-field in question is not being used.
+The `util` unions on the graph are very much akin to those found in `Vertex` structures except that
+the `Graph` type also holds a discriminant character array indicating the purpose of each of those
+utility fields, both for itself and for the vertices and arcs within it. This is truly a showcase of
+the severe limitations and safety issues with C-style unions, and likely also the reason why the
+Rust rewrite will not follow that approach. As a consequence, even though it's a string field to C
+compilers, this is in actuality a purely single-character based array where each element denotes, in
+uppercase ASCII alphabetic symbols, the purpose of the utility field at any given time (this
+information is stored also for the purposes of exporting graphs with the `gb_save` module, because
+these exported files embed graph information and need to be lossless.) The alphabetic symbols in
+question follow the same semantics as the names in the union declaration. For each of the possible
+fields, it considers the complete set of union fields (including the fields on the `Graph`, and
+those on the `Vertex`s and `Arc`s contained within it,) adding the `Z` character to indicate that
+the field in question is not in use.
 
-Each graph also holds an `id` field for the purposes of interaction with other graphs in the
-generative routnies of the GraphBase program itself. The tone with which #author(<taocp-2>) speaks
-while explaninig each of the elements of the API is very much that of a library providing graph
-primitives and not that of a library providing a graph testing framework, often mentioning the use
-of algorithms and how would these benefit from the fields provided to the developer of such
-routines, so it's as a conservative heuristic, I belive this kernel file should *not* be taken to be
-a realiable source to base the trait-based interface off of for the composable engine API covering
-the funtionaltiy of said core routines.
+The distribution for this single-character array is as follows.
 
-The reasoning behind the field describing the `util` unions present on each graph is that of
-providing an explanation for not only the graph's own union fields, but also that of providing
-meaning for the fields on each `Vertex` and `Arc` in the `Graph`. The selected formatting follows
-the afore-mentioned semantics, while expecting the user of such fields to interpret the first six
-indices as being those relative to the `Vertex` fields in the corresponding array, the next two
-fields as being those corresponding with the union fields present in `Arc`s, and the last six as
-being those in the `Graph` proper. The array, by default, is outfit with 15 characters, not so much
-because it requires of another field, but because it's implicitly also an ASCII-Z terinated string
-(a null-terminated string.) This design choice also implies the author is not expecting the API to
-be used without complete uniformity over the use of each `util` field for all vertices and arcs in a
-given graph (i.e. if the discriminant for some field of a vertex denotes a certain purpose for said
-vertex, such purpose is extended to any and all vertices in the graph.)
+/ Range `0`-`5`: \
+  They denote the meaning of `util` fields in the contained `Vertex`.
+
+/ Range `6`-`7`: \
+  They provide significance to the `util` fields of `Arc`s. Recall this type only had two such
+  fields.
+
+/ Range `8`-`13`: \
+  They provide meaning to the `util` fields in the overarching `Graph` type.
+
+`Graph`s also holds an `id` field that is not meant as a UID, but rather as a form of identification
+against the routine that invoked creation of the graph. this is because most graphs are created
+after a generative routine has been issued with specific parameters, as explained throughout
+@knuth-graphbase[Ch. 1].
 
 Because these fields' main purpose is that of providing a discriminant for the union and because
-#author(<taocp-2>) expects their use to be most often found in the I/O routines, they could be
-completely replaced with a trait-based implementation on the formatter API such that exporting was
-modeled after the Serde serialization/deserialization practices, which could make for an API that
-would be as extensible as the user's would require. A possible implementation would go through using
-a Serde-like custom `derive` macro that would allow arbitrary user input on an external proc macro
-to set up the serialization and/or deserialization of the graph primitives involved in the
-generative routines of GraphBase.
+#dek expects their use to be most often found in I/O routines, they could be completely replaced
+with a trait-based implementation on the formatter API such that exporting was modeled after `serde`
+serialization/deserialization, which could make for an API that would be as extensible as the users
+would require. A possible implementation would go through using an attribute-like macro that would
+let the user choose a serialization method of choice by using the inherent type consumption of these
+macros; Given some annotated type, they could produce the same type with the corresponding `serde`
+macros applied. This may or may not be feasible, depending on whether the Rust parser performs
+another pass through the AST of a source file after evaluation of an attribute-like macro.
+*I leave this idea in the backburner.*
 
 The graph creation routine, `gb_new_graph()`, performs two main operations: #l-enum[allocating space
   for the graph and a parameterized amount of edges $n$ passed as part of the routine, plus an
@@ -1172,41 +1172,142 @@ differently.
 
 == On the book
 
-The first chapter explains the use of the different, non-kernel modules of GraphBase, and contrary
-to what my initial beliefs, does not use `gb_basic.w` as the building blocks for the rest of the
-programs. If anything, starting from the `gb_words.w` module, all other generative routines are
-increasingly complex and often involve the use of (increasingly) more complex algorithms, like the
-_simplex_ optimization algorithm for producing some of the graphs in `gb_basic.w` (which ironically
-is not as basic in nature as I thought it to be.)
+The first chapter explains the use of the non-kernel modules, and contrary to what my initial
+beliefs, does not use `gb_basic.w` as the building blocks for the rest of the programs. If anything,
+starting from the `gb_words.w` module, all other generative routines are increasingly complex and
+often involve the use of (increasingly) more complex algorithms, like the _simplex_ optimization
+algorithm for producing some of the graphs in `gb_basic.w` (which ironically is not as basic in
+nature as I thought it to be.)
 
 A good starting point may be to review again the comments on the viability of some of these routines
-mentioned at the start of the chapter, as #author(<taocp-3>) indicates that some of them are not a
-good fit for real use outside demostration purposes.
+mentioned at the start of the chapter, as #dek indicates that some of them are not a good fit for
+real use outside demonstration purposes.
 
-Chapter 2 follows with an explanation of the internal kernel files that I already went through, and
-so may prove to be more immediately useful to the existing notes taken on those modules than chapter
-1 does now.
+@knuth-graphbase[Ch. 2] follows with an explanation of the internal kernel files that I already went
+through, and so may prove to be more immediately useful to the existing notes taken on those modules
+than chapter 1 does now.
 
 Upon rereading the material at the start of the chapter, it seems that the generator modules are all
-potentially capable of being used in non-trivial settings; It is the demostration programs with
-names missing the `gb` prefix should be considered as exploratory in nature and not as full
+potentially capable of being used in non-trivial settings; It is the demonstration programs with
+names missing the `gb` prefix that should be considered as exploratory in nature and not as full
 showcases of the potential of the generative routines.
 
 The `gb_save.w` module is an exception to the above statements on the complexity of the invovled
-theory, as the routines involved are intended for the purposes of saving in a standard format some
-graph generated through the generative routines. This module should likely use a more restrictive
-grammar than that of the `gb_io.w` module, as the latter only required of strict parsing in the
-first 4 lines and the last line of the input data set files (`.dat` files.) Because the I/O
-interface is likely going to be the most generalized API in the rewrite, maybe it's a starting point
-would be to implement one of the generative modules, and immediately proceed to the implementation
-of the output routines, as that should allow better understanding the parser logic and possibly
-seeing whether the final program should include the "old" logic for backwards-compatible purposes,
-but rely mostly on the use of modern serialization algorithms like those in the `serde` crate when
-attempting to distribute graphs between users of the library.
+theory, as the routines are intended for the purposes of saving in a standard format some graph
+produced by the generative routines. This module likely defines a more restrictive grammar than that
+of the `gb_io.w` module, as the latter only required of parsing in the first 4 lines and the last
+line of the input data set files, the rest was free-form and thus only resolved through lexer-like
+routines. Because the I/O interface is likely going to be the most generic API in the rewrite, maybe
+it proves to be a good starting point to implement one of the generative modules, and immediately
+proceed to the implementation of the output routines, as that should allow better understanding the
+parser logic and possibly seeing whether the final program should include the "old" logic for
+backwards-compatible purposes, but rely mostly on the use of modern serialization practices like
+those in the `serde` crate when attempting to distribute graphs between users of the library.
 
 An alternative route would be to implement the kernel core routines, follow up with the `gb_basic.w`
-generative module, and then continue with the `gb_save.w` module. This is due to the fact #dek
-recommend in the introduction to the documentation fo the `gb_graph.w` module perusing the
-`gb_basic.w` generative routines to better understand the graph primitives.
+generative module, and then continue with the `gb_save.w` module. #dek himself recommends persuing
+this module right after an initial read of the kernel routines.
+
+@knuth-graphbase[Sec. 2.1] does mention that the main purpose of the memory strategy behind using
+`Area`s is to have all allocations pertinent to some `Graph` (and in the off chance any other type)
+be centralized under a common umbrella that would allow the user of the routines to more easily
+manage the resources alloacted on the heap during creation and potential destruction of each of the
+elements associated with their implementations. This is pretty much RAII, but back when not even C++
+implemented the paradigm in some its types. @knuth-graphbase[Sec. 3.7] mentions that the demo
+program `queens.w` should serve as a good introduction to writing programs that use the GraphBase
+library, so that might also be something to look into.
+
+@knuth-graphbase[Ch. 4] alludes to the fact the source files contained at the end of the book are
+actually the same CWEB files that are included with the source files of the distribution, but
+additionally weaves into their DVI formats, so that should provide some insights into their workings
+(outside a termianl pager view,) considering the full GraphBase is documented.
+
+*The new roadmap looks as follows: #l-enum[read through the kernel files's weaved result in
+  @knuth-graphbase[Sec. _Programs of the Stanford GraphBase_] and possibly take notes of missing
+  material][read through the same weaved contents but for the `gb_basic.w` module, and][read through
+  the `gb_save.w` module].*
+The latter two are also going to require taking notes on them, but that is obvious because no notes
+have been taken just yet. Once all that is done, implementation details should start being
+discussed.
+
+=== #smallcaps[GB_FLIP]
+
+Contrary to my initial beliefs, the random number generator is conjectured to be capable of
+resolving to a period of potentially $2^85 - 2^30$, except for one input seed value. Even though the
+initial implementation was determined to use the standard `rand` crate in the Rust ecosystem, this
+may prove useful while implementing the code in the `ClassicBackend` of the random number generator
+API.
+
+A neat trick that I noted in @random-number-module, but that I didn't quite make a good point of,
+was that #dek uses the bitwise `&` operation to compute the modulo between two numbers. This may
+prove useful at some point down the line, though maybe the built-in modulo operation is laready
+optimized to produce good, possibly bitwise operations in the underlying Rust runtime if it deems
+the situation fit for it.
+
+Beyond this, my conclusions continue being the same as those in @random-number-module. The initial
+implementation is only goin to use the `rand` crate as that can likely also be configured with the
+right set of parameters to have the seed be deterministic, as #dek himself recommends and very much
+expects to produce initially random but regardless reproducible results across runs with the same
+seed.
+
+=== #smallcaps[GB_GRAPH]
+
+Thinking again the approach taken with the `verbose` flag that is exposed to outside programs, I can
+say that this could greatly benefit from either not including, or using the `tracing` crate instead.
+This should allow providing some degree of verbosity to the user of the library as a (possibly)
+opt-in feature when debugging, or to plug their own verbose options by using some exposed interface
+that toggled verbosity in certain places.
+
+This is mostly due to the fact kernel modules in the original GraphBase, as conceived by #dek, were
+not expected to be used outside the purposes of GraphBase programs, and because C was severely
+constrained at the time when it came to logging capability interop with programs using some library.
+Either way, in Rust it would be more idiomatic to let the programs using the library crate have
+whatever shenanigans they got going with something like `clap` for argument parsing, and `log` or
+`color_eyre` for error handling to do the heavywork of presenting the contents to the user.
+
+A crate-wide macro to toggle logging functionality would be a good addition, if not a necessary one
+when testing programs outside the library. The initial implementation, though, is likely not to
+require this feature so *I'm leaving it in the backburner*.
+
+Contrary to my initial comments on the offsetting of values for error codes expanding to numbers 10
+and 11, these are not meant to have some number (offset) added to them, but rather to indicate that
+something else, covered by `io_errors`, has happened. Thus if upon inspecting `panic_code`, the user
+finds any one of these, they should be lead to believe that further information is embedded within
+any one of the static globals concerning I/O-bound errors.
+
+From looking again into the definition of `Arc`, maybe it's a good idea to get out of the standard
+fields the field indicating the length of the arc, as that could be included through the
+complementary information that the codegen alternative to using `union`s would provide. This should
+only be decided, thouhg, once the fields most often used by the generative routines are evaluated,
+and thus once I can say for sure that this is a good idea (otherwise I doubt #dek didn't notice that
+the length of each arc in an embedded graph couldn't have been added to the utility fields instead,
+considering these also cover, under the declaration of the `util` union type, an integer of the same
+width as that used for the `len` field of `Arc`.)
+
+The same as above also applies to the field containing each of the fields in the `Vertex` type.
+Further observation is pending.
+
+Reading about the memory allocation strategy in the weaved document seems clearer now. The comments
+on it were not in the wrong at all, and it's quite possibly going to get removed from the Rust
+implementation. An alternative would be for some future backend (definetely not in the first
+implementation) to use `MaybeUnint` to replicate the behavior achieved through memory `Area`s in the
+original GraphBase. An addition to this would be to mediate between the library user and the
+requests to the global allocator by building up some `Layout` from the `std::alloc` module to have
+the amount of memory "customized." Though, then again, this is only a future plan, as the initial
+implementation is only going to use the built-in OBRM that Rust already implements.
+
+On the previous comments about the size of the graph primitive types, my comments also apply to the
+`Graph` type. Looking at it again, it seems more and more like the only field that is truly
+representative of anything in a graph is the DS that is used to represent the vertices and the arcs.
+The strictly mathematical definition is $G = (V, E)$ after all, and all other fields should be
+codegenerated with the apropriate methods/associated functions if need be.
+
+This could lead to an implementation that takes the codegen idea in two ways. On the one hand, we
+would consider a very primitive data type for each of the core graph types, and a proc-macro would
+extend with knowledge at compile time of the desired extension type some new implementations on top
+of that primitive. On the other hand, the graph primitives exposed to the user would also consider
+another proc-macro that would, on the user's own type, implement the field they want, and expose the
+entire API of the graph primitive, itself derived from one of the possible codegen paths exposed
+through the prior, internal proc-macro as additional options of the public interface proc-macro.
 
 #bibliography("bib.yml")
