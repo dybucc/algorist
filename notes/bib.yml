@@ -46,3 +46,6 @@ clrs:
     - "Rivest, Ronald R."
     - "Stein, Clifford"
   edition: 4
+rust-ref:
+  type: Book
+  title: "The Rust Reference - 1.92.0 - Stable"

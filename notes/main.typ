@@ -831,7 +831,7 @@ first four lines and the last line of the file. Every line of a `.dat` file shou
 matching the following regex.
 
 ```
-^\* File "([^"]+)".+
+^\* File "([^"]+)".+$
 ```
 
 The second and third lines of the file are only matched against the same `*` character, and can thus
@@ -840,26 +840,28 @@ source/purpose of the data set, as well some licensing on how would the author l
 distribute the file.
 
 The fourth line of the file will include information relative to the checksum, which allows
-performing a fast computation of the "expected" contents of the input string and thus lets the
-program bail out as it is reading the buffer if the expected input does not adjust to the result of
-the checksum formula. The details of the checksum used by #author(<taocp-2>) will be commented on
-later. The specific format of the line should adjust to the following regex.
+computing the "expected" contents of the input string, but requires reading in the entire buffer
+prior to determining if the chekcsum formula adjusts with the expected checksum read in this line.
+The details of the checksum used by #dek will be commented on later. The following regex describes
+the expected line formatting.
 
 ```
 ^\* \(Checksum parameters (\d+),(\d+)\)$
 ```
 
 The first capture group in the regex corresponds with the expected number of lines after the
-checksum (fourth) line, and _not_ counting the last line (the one with no data, but special
-formatting.) The second capture group corresponds with the final "magic number" that #author(
-  <taocp-2>,
-) uses to compute the checksum from the entire contents of the file, through the formula we'll
-discuss after we're done with the grammar describing file formatting.
+checksum (fourth) line, _not_ counting the last line (the one with no data, but special formatting,
+where we consider as _special formatting_ any lines starting with the `*` symbol.) The second
+capture group corresponds with the final "magic number" that #dek uses to compute the checksum from
+the entire contents of the file, through the formula we'll discuss after we're done with the grammar
+describing file formatting.
 
 After this line, the parsing routine simply sets up the required (global, and thus inherently
 unsafe) buffers for other routines to manually continue the parsing process on the rest of the file
-contents, making sure that there are exactly as many lines as the first checksum parameter indicated
-at the start of the file.
+contents. Each of the lexer routines checks first if the start of the line contains the `*` symbol,
+and if that's the case, it passes control over to the function that checks if the total number of
+lines read thus far adjusts itself with the expected amount read in the fourth line (the first
+capture group in the regex.)
 
 Once the specified number of lines has been read through other routines (that are quite possibly
 going to get replaced in Rust,) another parser routine is expected to be called to check for the
@@ -869,20 +871,20 @@ contents of the last line in the file to conform with the following regex.
 ^\* End of file "([^"]+)"$
 ```
 
-We move now onto the checksum formula that #author(<taocp-2>) uses to check that the contents of the
-file match with the second parameter of the fourth line, itself corresponding with the resulting
-magic file that the library routines should have gathered from computing the (series-like) formula.
+We move now onto the checksum formula that #dek uses to check that the contents of the file match
+with the second parameter of the fourth line, itself corresponding with the resulting magic file
+that the library routines should have gathered from computing the output-dependent series.
 
 The checksum is computed in terms of the formula
 
 $
   (sum_l 2^l dot c_l) mod p, \
-  "where" p "is a large prime, and the values of" c_l "depend on #author(<taocp-2>)'s character set enconding".
+  "where" p "is a large prime, and" c_l "depends on" #dek"'s character set encoding".
 $ <checksum-theory-formula>
 
 Each possible value of $c_l$ corresponds with a numerical value that maps 96 admitted characters
-into a symbol table that hashes them into the range `0..=96`. The checksum is then computed by
-reading the characters from each lines of the file and getting, on a character-by-character basis,
+into a symbol table that hashes them into the range $[0, 96]$. The checksum is then computed by
+reading the characters from each line of the file and getting, on a character-by-character basis,
 the hashed numerical value added to some initial value $a$, itself starting as the old value of the
 checksum or as 0 when reading in the first line of input, in the following loop formula.
 
@@ -890,33 +892,35 @@ $
   a = (2 dot a + c_l) mod p.
 $
 
-This should hold so long as the string yields a non-null character, such that the value of the
-checksum is only considered to be valid if the line adjusts to the set length of 79 characters. Each
-"old checksum" is then added to the value of the newly computed temporary (upon hitting end of line
+This recurrence relation should hold so long as the string yields a non-null character, which is to
+say until the passed string standing in for the current internal cursor position in the open file
+descriptor hasn't hit the null terminator at the end of a line. Each "old checksum" (the $a$ in the
+above formula) is then added to the value of the newly computed temporary (upon hitting end of line
 by hitting the null terminator of the passed string) for the routine to return the new value of the
 checksum as a function of both. This is supposed to evaluate to @checksum-theory-formula once the
 entirety of the file has been read (where we define _entirety_ as all lines post the
 checksum-parameterized (fourth) line, and prior to the last `*`-prefixed line, indicating the end of
-the input data set with the same name as indicated in the first `*`-prefixed line, for a
-GraphBase-conforming data set.) The result of the last computed checksum is the one that is then
-compared with the second parameter of the fourth line of the `.dat` file.
+the input data set with the same name as included in the capture group of the first `*`-prefixed
+line regex, for a GraphBase-conforming data set.) The result of the last computed checksum is the
+one that is then compared with the second parameter of the fourth line of the `.dat` file.
 
-In terms of the grammar of expected data, the GraphBase makes no specfication beyond providing
-library user with three routines to either #l-enum[parse a string until meeting some other passed
-  delimitter][parse a digit in some given radix $d$, by checking through the `icode` array the
-  numerical value of the read number; This is possible because all character-encoded numbers are
-  meant to map to the same numerical values in #author(<taocp-2>)'s encoding, or][read in a whole
-  number by performing an operation akin to that of reading a single digit, but instead repeating in
-  a loop and adding up the values to some temporary $k$ that is returned with the correct powers of
-  the passed radix for each digit of the processed number]. This implies that the actual data
-between the first four lines of the file and the last line is only expected to comply with the
-conditions on line length (79 characters, not accounting for newline termination,) and on character
-set encoding (96 characters including the standard 94 visual ASCII characters, the `\n` escape
-sequence and the whitespace separator.)
+GraphBase makes no context-free grammar specfication beyond providing library users three lexer
+routines to either #l-enum[read in a string until meeting some other passed delimitter][read in a
+  digit in some given radix $d$, by checking through the `icode` array the numerical value of the
+  read number; This is possible because all character-encoded numbers are meant to map to the same
+  numerical values in #dek's own encoding, or][read in a whole number by performing an operation
+  akin to that of parsing a single digit, but instead looping and adding up the values to some
+  temporary $k$ that is returned with the correct powers of the radix passed to the function for
+  each digit of the processed number]. This implies that the actual data between the first four
+lines of the file and the last line is only expected to comply with the conditions on line length
+(79 characters, not accounting for newline termination,) on system-independent character set use (96
+characters including the standard 94 visual ASCII characters, the `\n` escape sequence and the
+whitespace separator,) and on the starting character in the line (can't use the `*` symbol, as that
+denotes the end of the input and the data set would fail to hash correctly.)
 
 The notes on the routines for I/O should be mostly done now. The rest of the work left on the kernel
 routines concerns itself only with the sorting module, and actually understanding the random number
-generator now that I have possession of volumes 2 and 3 of #author(<taocp-2>)'s magnum opus.
+generator now that I have possession of volumes 2 and 3 of #dek's magnum opus.
 
 === Sorting routines (`gb_sort.w`)
 
@@ -1168,7 +1172,9 @@ just fine. Alternatively, if the source of randomness can be determined to be th
 at compile time, then a `cfg` flag for conditional compilation should allow using an unstable sort
 algorithm, because any possible reordering not based on the fields that define the partial ordering
 relation should resolve differently on every run, as the satellite data has been shuffled
-differently.
+differently. The `std::random_device` already available in the C++ standard library could do this
+without having to use any form of conditional compilation, but it remains to be known whether the
+`rand` crate implements some such functionality.
 
 == On the book
 
@@ -1278,14 +1284,42 @@ any one of the static globals concerning I/O-bound errors.
 From looking again into the definition of `Arc`, maybe it's a good idea to get out of the standard
 fields the field indicating the length of the arc, as that could be included through the
 complementary information that the codegen alternative to using `union`s would provide. This should
-only be decided, thouhg, once the fields most often used by the generative routines are evaluated,
+only be decided, though, once the fields most often used by the generative routines are evaluated,
 and thus once I can say for sure that this is a good idea (otherwise I doubt #dek didn't notice that
 the length of each arc in an embedded graph couldn't have been added to the utility fields instead,
 considering these also cover, under the declaration of the `util` union type, an integer of the same
 width as that used for the `len` field of `Arc`.)
 
-The same as above also applies to the field containing each of the fields in the `Vertex` type.
-Further observation is pending.
+The same as above also applies to the field containing each of the fields in the `Vertex` type. This
+may require further work in its implementation, as the hashing scheme to allow for $O(1)$ lookup
+into the vertices of a given graph `g` relies on always having available the vertex "name"
+associated with each instance of a `Vertex`. An alternative would be to have the `Hash` trait
+implementation be derived only on the types that specified such an option through the proc-macro
+that would get exposed in the public interface.
+
+This, though, also relies on outer attribute-like macros being resolved post-tokenization and
+_before_ parsing and expansion of the `derive`-like macros; Otherwise, the whole thing falls apart,
+as `derive` macros are not meant to be inert. @rust-ref speaks of attribute-like macros expanding in
+the order in which the lexer detects the attributes and passes them off the the tokenization
+routines, but it doesn't specify the order in which some macro gets evaluated if a prior macro
+generated another, pre-expansion-wise nonexisting, macro at the end of its own invocation. It's
+quite likely the generated tokens will run as well, based on the fact the reference refers to all
+"lower" items as being fed the entirety of the token tree in the span of the scope-level item, which
+implies that a top-level macro must include as part of its generated output the prior macros for
+them to expand. This sounds like it is equivalent to having the macro generate a new macro, and not
+just regenerate an existing macro. Whenever the function tagged with the corresponding `proc_macro*`
+attribute returns or panics, whatever codegen is inserted into the "source file" (already loaded
+into memory by the compiler,) is the same regardless of whether it is an existing macro or a new
+macro. But testing is pending.
+
+The `Hash` trait cannot be derived, because each `Vertex` is likely to hold information beyond that
+of its string identifier, and the default implementation of the `derive` macro on `Hash` is
+implemented in terms of calling `hash()` on each of the fields of the derived type; But GraphBase
+only requires hashing in terms of the string field, and not in terms of a pointer, capacity and
+length for the adjacency lists of each of the vertices. A possible solution would be to implement
+another `derive`-like proc-macro that would base its implementation off of the presence of a type
+implementing `AsRef<&str>` or `Deref<&str>`, such that it could be applied internally to any new
+graph types resulting from the rest of the codegen proc-macros.
 
 Reading about the memory allocation strategy in the weaved document seems clearer now. The comments
 on it were not in the wrong at all, and it's quite possibly going to get removed from the Rust
@@ -1300,7 +1334,11 @@ On the previous comments about the size of the graph primitive types, my comment
 `Graph` type. Looking at it again, it seems more and more like the only field that is truly
 representative of anything in a graph is the DS that is used to represent the vertices and the arcs.
 The strictly mathematical definition is $G = (V, E)$ after all, and all other fields should be
-codegenerated with the apropriate methods/associated functions if need be.
+codegenerated with the apropriate methods/associated functions if need be. The only field that may
+be worth keeping around would be the UID of the graph; As per the original GraphBase, it is not
+unique in nature, but this could very well change in the Rust rewrite if the generative routines
+prove to fit well with a unique ID instead of a function-call-based ID. This change would also
+discard the routines for generating both regular IDs and compound IDs.
 
 This could lead to an implementation that takes the codegen idea in two ways. On the one hand, we
 would consider a very primitive data type for each of the core graph types, and a proc-macro would
@@ -1309,5 +1347,52 @@ of that primitive. On the other hand, the graph primitives exposed to the user w
 another proc-macro that would, on the user's own type, implement the field they want, and expose the
 entire API of the graph primitive, itself derived from one of the possible codegen paths exposed
 through the prior, internal proc-macro as additional options of the public interface proc-macro.
+
+The graph building routine `gb_new_graph()` mentions that the space reserved is of `n + extra_n`,
+instead of the parameterized $n = abs(V), G = (V, E)$. On the comments in @graph-routines, I
+mentioned that space was both allocated and assigned to the `Area` of the `Graph`, but that is not
+the case. Memory is assigned for $n + #raw("extra_n")$ vertices, but only the first $n$ vertices are
+initialized with the null string. The othe `extra_n` vertices are only part of the same memory
+`Area` pointed to by the `first` field of the graph's `data` field, but are not explicitly
+initialized to the expected state of unused vertices.
+*In Rust, this would translate to keeping a vector and reserving for the specified capacity, without
+resizing the actual size of the collection on vertex creation.*
+
+All of the routines for allocating arcs and having them either assigned to a directed or undirected
+graph are getting removed in the rewrite. They should work without special treatment if we use the
+built-in capabilities of the `Vec` collection in Rust. The `gb_virgin_arc()` is one of the routines
+that is especially not required, considering there is no need to keep track of the data allocated on
+the heap manually; RAII will do it for us.
+
+The scheme that #dek follows to have the arcs in a directed graph be contiguous in the
+heap-allocated array containing the data for both arcs and strings in a given graph cannot be easily
+replicated in Rust, so it's going to have to get replaced with some other mechanism. A possible
+alternative would be to have the arcs be shared by some global resource handle that had them grouped
+between vertices of the same graph, such that the arcs held in the adjaceny matrix were only
+pointers (references) to the edges owned by the overarching resource handle. Maybe the resource
+handle could be made into being part of the `Graph` type, such that the "regular" layout of an
+adjacency list is upkept on a `Vertex`-per-`Vertex` basis, but the contents of each of those
+vertices underlying linked lists (possibly implemented as either one of a contiguous collection or a
+double-ended queue,) would be references to the resource handle. Even though we speak of a resource
+handle because the memory would be owned by whatever container would have the memory allocated for
+arcs, it's quite possibly going to be abstracted in more graph-logic-consistent manner.
+
+The allocations for strings can safely rely on raii so they can be stored within the same `Vertex`
+record, and the `Drop` implementation once they go out of scope should trigger memory freeing.
+
+The need for #dek to implement the graph switching routine only arised as a limitation of the time
+when he implemented GraphBase, so it's getting replaced with associated functions in the overarching
+types making up the set of graph primitives in the rewrite. This should also allow replacing the
+`gb_new_arc()` and `gb_new_edge()` with the same set of arc/edge addition routines, instead of
+reimplementing them as methods _and_ free functions.
+
+=== #smallcaps[GB_IO]
+
+The only thing that was not noted in the previous comments on this set of routines is the use of the
+`fill_buf()` routine, which attempts to bridge the gap with systems that add whitespace padding to
+be conformant with their filesystem requirements. This could still be a limitation that needs to be
+addressed, even with today's devices. Still, this particular feature is going to require more
+research into which modern-day FSs use byte padding in user files, and it's not getting into the
+initial release.
 
 #bibliography("bib.yml")
