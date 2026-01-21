@@ -1395,4 +1395,9 @@ addressed, even with today's devices. Still, this particular feature is going to
 research into which modern-day FSs use byte padding in user files, and it's not getting into the
 initial release.
 
+=== #smallcaps[GB_BASIC]
+
+For the second reread, try to find an option for compiling CWEB programs with the index for
+variables in use embeded into each of the pages, instead of at the end of the document.
+
 #bibliography("bib.yml")
