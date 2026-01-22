@@ -48,7 +48,7 @@ that the generated numbers follow as part of, upon initialization, a predetermin
 #let period = 85 - 30
 
 According to the file, the period of the numbers is of $2^(85) - 2^(30) = 2^#period$. According to
-Skiena's book, the cycling of numbers that rely on $2^32$ calls of a linear congruential engine is
+@skiena-2020, the cycling of numbers that rely on $2^32$ calls of a linear congruential engine is
 worrying. Whether the algorithm used in this file is a linear congruential engine, and whether
 $2^#period$ calls may be performed by today's computers in little more than $2^32$ calls is
 something I am not aware of.
@@ -1259,17 +1259,18 @@ seed.
 === #smallcaps[GB_GRAPH]
 
 Thinking again the approach taken with the `verbose` flag that is exposed to outside programs, I can
-say that this could greatly benefit from either not including, or using the `tracing` crate instead.
-This should allow providing some degree of verbosity to the user of the library as a (possibly)
-opt-in feature when debugging, or to plug their own verbose options by using some exposed interface
-that toggled verbosity in certain places.
+say that this could greatly benefit from either not getting included, or using the `tracing` crate
+instead. This should allow providing some degree of verbosity to the user of the library as a
+(possibly) opt-in feature when debugging, or to plug their own verbose options by using some exposed
+interface that toggled such verbosity in certain places.
 
 This is mostly due to the fact kernel modules in the original GraphBase, as conceived by #dek, were
 not expected to be used outside the purposes of GraphBase programs, and because C was severely
-constrained at the time when it came to logging capability interop with programs using some library.
-Either way, in Rust it would be more idiomatic to let the programs using the library crate have
-whatever shenanigans they got going with something like `clap` for argument parsing, and `log` or
-`color_eyre` for error handling to do the heavywork of presenting the contents to the user.
+constrained at the time when it came to logging capability interop with programs using libraries
+integrating such functionality. In Rust it would be more idiomatic to let the programs using the
+library crate have whatever shenanigans they got going with something like `clap` for argument
+parsing, and `log` or `color_eyre` for error handling to do the heavywork of presenting the contents
+to the user. And none of this should be part of a library crate.
 
 A crate-wide macro to toggle logging functionality would be a good addition, if not a necessary one
 when testing programs outside the library. The initial implementation, though, is likely not to
@@ -1277,9 +1278,9 @@ require this feature so *I'm leaving it in the backburner*.
 
 Contrary to my initial comments on the offsetting of values for error codes expanding to numbers 10
 and 11, these are not meant to have some number (offset) added to them, but rather to indicate that
-something else, covered by `io_errors`, has happened. Thus if upon inspecting `panic_code`, the user
-finds any one of these, they should be lead to believe that further information is embedded within
-any one of the static globals concerning I/O-bound errors.
+something else, covered by `io_errors`, has happened. Thus, if upon inspecting `panic_code`, the
+user finds any one of these, they should be lead to believe that further information is embedded
+within any one of the static globals concerning I/O-bound errors.
 
 From looking again into the definition of `Arc`, maybe it's a good idea to get out of the standard
 fields the field indicating the length of the arc, as that could be included through the
@@ -1312,14 +1313,14 @@ attribute returns or panics, whatever codegen is inserted into the "source file"
 into memory by the compiler,) is the same regardless of whether it is an existing macro or a new
 macro. But testing is pending.
 
-The `Hash` trait cannot be derived, because each `Vertex` is likely to hold information beyond that
-of its string identifier, and the default implementation of the `derive` macro on `Hash` is
-implemented in terms of calling `hash()` on each of the fields of the derived type; But GraphBase
-only requires hashing in terms of the string field, and not in terms of a pointer, capacity and
-length for the adjacency lists of each of the vertices. A possible solution would be to implement
-another `derive`-like proc-macro that would base its implementation off of the presence of a type
-implementing `AsRef<&str>` or `Deref<&str>`, such that it could be applied internally to any new
-graph types resulting from the rest of the codegen proc-macros.
+Thinking twice about it, the `Hash` trait cannot be derived, because each `Vertex` is likely to hold
+information beyond that of its string identifier, and the default implementation of the `derive`
+macro on `Hash` is implemented in terms of calling `hash()` on each of the fields of the derived
+type; But GraphBase only requires hashing in terms of the string field, and not in terms of a
+pointer, capacity and length for the adjacency lists of each of the vertices. A possible solution
+would be to implement another `derive`-like proc-macro that would base its implementation off of the
+presence of a type implementing `AsRef<&str>` or `Deref<&str>`, such that it could be applied
+internally to any new graph types resulting from the rest of the codegen proc-macros.
 
 Reading about the memory allocation strategy in the weaved document seems clearer now. The comments
 on it were not in the wrong at all, and it's quite possibly going to get removed from the Rust
@@ -1352,7 +1353,7 @@ The graph building routine `gb_new_graph()` mentions that the space reserved is 
 instead of the parameterized $n = abs(V), G = (V, E)$. On the comments in @graph-routines, I
 mentioned that space was both allocated and assigned to the `Area` of the `Graph`, but that is not
 the case. Memory is assigned for $n + #raw("extra_n")$ vertices, but only the first $n$ vertices are
-initialized with the null string. The othe `extra_n` vertices are only part of the same memory
+initialized with the null string. The other `extra_n` vertices are only part of the same memory
 `Area` pointed to by the `first` field of the graph's `data` field, but are not explicitly
 initialized to the expected state of unused vertices.
 *In Rust, this would translate to keeping a vector and reserving for the specified capacity, without
@@ -1360,9 +1361,9 @@ resizing the actual size of the collection on vertex creation.*
 
 All of the routines for allocating arcs and having them either assigned to a directed or undirected
 graph are getting removed in the rewrite. They should work without special treatment if we use the
-built-in capabilities of the `Vec` collection in Rust. The `gb_virgin_arc()` is one of the routines
-that is especially not required, considering there is no need to keep track of the data allocated on
-the heap manually; RAII will do it for us.
+built-in capabilities of the `Vec` collection in Rust. `gb_virgin_arc()` is one of the routines that
+is especially not required, considering there is no need to keep track of the data allocated on the
+heap manually; RAII will do it for us.
 
 The scheme that #dek follows to have the arcs in a directed graph be contiguous in the
 heap-allocated array containing the data for both arcs and strings in a given graph cannot be easily
@@ -1372,19 +1373,21 @@ between vertices of the same graph, such that the arcs held in the adjaceny matr
 pointers (references) to the edges owned by the overarching resource handle. Maybe the resource
 handle could be made into being part of the `Graph` type, such that the "regular" layout of an
 adjacency list is upkept on a `Vertex`-per-`Vertex` basis, but the contents of each of those
-vertices underlying linked lists (possibly implemented as either one of a contiguous collection or a
-double-ended queue,) would be references to the resource handle. Even though we speak of a resource
-handle because the memory would be owned by whatever container would have the memory allocated for
-arcs, it's quite possibly going to be abstracted in more graph-logic-consistent manner.
+vertices' underlying linked lists (possibly implemented as either one of a contiguous collection or
+a double-ended queue,) would be references to the resource handle. Even though we speak of a
+resource handle because the memory would be owned by whatever container would have the memory
+allocated for arcs, it's quite possibly going to be abstracted in a more graph-logic-consistent
+manner.
 
-The allocations for strings can safely rely on raii so they can be stored within the same `Vertex`
-record, and the `Drop` implementation once they go out of scope should trigger memory freeing.
+The allocations for strings can safely rely on RAII so they can be stored within the same `Vertex`
+record, and the blanket `Drop` implementation should trigger memory freeing once they go out of
+scope.
 
 The need for #dek to implement the graph switching routine only arised as a limitation of the time
 when he implemented GraphBase, so it's getting replaced with associated functions in the overarching
 types making up the set of graph primitives in the rewrite. This should also allow replacing the
-`gb_new_arc()` and `gb_new_edge()` with the same set of arc/edge addition routines, instead of
-reimplementing them as methods _and_ free functions.
+`gb_new_arc()` and `gb_new_edge()` functions with the same set of arc/edge addition routines,
+instead of reimplementing them as Rust methods _and_ free functions.
 
 === #smallcaps[GB_IO]
 
@@ -1394,10 +1397,5 @@ be conformant with their filesystem requirements. This could still be a limitati
 addressed, even with today's devices. Still, this particular feature is going to require more
 research into which modern-day FSs use byte padding in user files, and it's not getting into the
 initial release.
-
-=== #smallcaps[GB_BASIC]
-
-For the second reread, try to find an option for compiling CWEB programs with the index for
-variables in use embeded into each of the pages, instead of at the end of the document.
 
 #bibliography("bib.yml")
