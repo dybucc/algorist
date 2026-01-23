@@ -1236,7 +1236,7 @@ The latter two are also going to require taking notes on them, but that is obvio
 have been taken just yet. Once all that is done, implementation details should start being
 discussed.
 
-=== #smallcaps[GB_FLIP]
+=== GB_FLIP
 
 Contrary to my initial beliefs, the random number generator is conjectured to be capable of
 resolving to a period of potentially $2^85 - 2^30$, except for one input seed value. Even though the
@@ -1256,7 +1256,7 @@ right set of parameters to have the seed be deterministic, as #dek himself recom
 expects to produce initially random but regardless reproducible results across runs with the same
 seed.
 
-=== #smallcaps[GB_GRAPH]
+=== GB_GRAPH
 
 Thinking again the approach taken with the `verbose` flag that is exposed to outside programs, I can
 say that this could greatly benefit from either not getting included, or using the `tracing` crate
@@ -1389,7 +1389,7 @@ types making up the set of graph primitives in the rewrite. This should also all
 `gb_new_arc()` and `gb_new_edge()` functions with the same set of arc/edge addition routines,
 instead of reimplementing them as Rust methods _and_ free functions.
 
-=== #smallcaps[GB_IO]
+=== GB_IO
 
 The only thing that was not noted in the previous comments on this set of routines is the use of the
 `fill_buf()` routine, which attempts to bridge the gap with systems that add whitespace padding to
@@ -1397,5 +1397,20 @@ be conformant with their filesystem requirements. This could still be a limitati
 addressed, even with today's devices. Still, this particular feature is going to require more
 research into which modern-day FSs use byte padding in user files, and it's not getting into the
 initial release.
+
+=== GB_SAVE
+
+The expected formatting is akin to that of comma-separated `.csv` files. A reading of `gb_gates.w`
+is going to be necessary because it specified a new convetion on using the non-negative integer
+number $1$ for yet unknown purposes when saving `vertex` records in a `.gb` file.
+
+Even though the scheme used for saving blocks is not going to be implemented in the same way with
+modern memory management practices, it may very well be that the order of an equivalent graph saved
+with the original GraphBase could greatly differ from the simplest one that could be implemented in
+Rust. It may be a good idea to revisit this module's documentation if comparing the graph types
+saved by GraphBase turns out to produce a different result from the one produced in the rewrite.
+
+The set of warnings at the end of the file is not getting into the initial release, and based on the
+type of error reporting that they perform, they may not get into any future release.
 
 #bibliography("bib.yml")
