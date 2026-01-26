@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["add"]};
+window.SIDEBAR_ITEMS = {"attr":["add_fields"],"macro":["graph"]};

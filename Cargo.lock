@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "algorist-grapht"
 version = "0.1.0"
+dependencies = [
+ "algorist-grapht-macros",
+]
 
 [[package]]
 name = "algorist-grapht-macros"
