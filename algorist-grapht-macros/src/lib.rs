@@ -2,15 +2,16 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    AngleBracketedGenericArguments, Block, DeriveInput, ExprStruct, Field, FnArg, GenericArgument,
-    Ident, ImplItem, ImplItemFn, ItemImpl, Pat, PatIdent, PatType, Path, PathArguments,
-    PathSegment, Result as SynResult, ReturnType, Signature, Token, TraitBound, TraitBoundModifier,
-    Type, TypeParamBound, TypePath, TypeTraitObject, TypeTuple, Visibility, braced,
+    ExprCall, ExprField, ExprStruct, Field, GenericParam, Generics, Ident, ImplItem, ImplItemFn,
+    Index, ItemImpl, Path, Result as SynResult, Token, Type, TypeTuple, Visibility, WhereClause,
+    WherePredicate, braced,
     parse::{Parse, ParseStream},
-    parse_macro_input,
+    parse_macro_input, parse_quote,
     punctuated::Punctuated,
-    token::{Brace, PathSep},
+    token::Brace,
 };
+
+use std::any::Any;
 
 struct Primitive {
     _struct_token: Token![struct],
@@ -52,7 +53,6 @@ impl Parse for Primitive {
     }
 }
 
-#[non_exhaustive]
 struct Tweaks {
     additional_fields: Punctuated<Field, Token![,]>,
 }
@@ -145,203 +145,170 @@ pub fn declare(input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_derive(TupleConstr)]
-pub fn gen_tuple_constructors(input: TokenStream) -> TokenStream {
-    let derive_input = parse_macro_input!(input as DeriveInput);
-    let ident = derive_input.ident;
-    let mut functions = ItemImpl {
+pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
+    // Model:
+    #[expect(unused)]
+    {
+        struct SampleStruct(Vec<Box<dyn Any>>);
+
+        impl SampleStruct {
+            fn sample_impl<T1, T2>(fields: (T1, T2)) -> Self
+            where
+                for<'a> T1: 'a + Any,
+                for<'a> T2: 'a + Any,
+            {
+                Self(vec![Box::new(fields.0), Box::new(fields.1)])
+            }
+        }
+    }
+
+    let mut impl_block = ItemImpl {
         attrs: Default::default(),
         defaultness: None,
         unsafety: None,
         impl_token: Default::default(),
         generics: Default::default(),
         trait_: None,
-        self_ty: Box::new(Type::Path(TypePath {
-            qself: None,
-            path: Path {
-                leading_colon: None,
-                segments: {
-                    let mut output = Punctuated::new();
-                    output.push(PathSegment {
-                        ident: Ident::new("FieldBuilder", Span::call_site()),
-                        arguments: PathArguments::None,
-                    });
-
-                    output
-                },
-            },
-        })),
+        self_ty: Box::new(parse_quote! { FieldBuilder }),
         brace_token: Default::default(),
-        items: Vec::new(),
+        items: Vec::with_capacity(1000),
     };
 
-    let mut ident_state = 1_usize;
-    let dyn_object = {
-        let mut output = Punctuated::<PathSegment, PathSep>::new();
-        output.push(PathSegment {
-            ident: Ident::new("Box", Span::call_site()),
-            arguments: PathArguments::AngleBracketed(AngleBracketedGenericArguments {
-                colon2_token: None,
-                lt_token: Default::default(),
-                args: {
-                    let mut output = Punctuated::new();
-                    output.push(GenericArgument::Type(Type::TraitObject(TypeTraitObject {
-                        dyn_token: Default::default(),
-                        bounds: {
-                            let mut output = Punctuated::new();
-                            output.push(TypeParamBound::Trait(TraitBound {
-                                paren_token: Default::default(),
-                                modifier: TraitBoundModifier::None,
-                                lifetimes: None,
-                                path: Path {
-                                    leading_colon: None,
-                                    segments: {
-                                        let mut output = Punctuated::new();
-                                        output.push(PathSegment {
-                                            ident: Ident::new("FieldElem", Span::call_site()),
-                                            arguments: PathArguments::None,
-                                        });
-
-                                        output
-                                    },
-                                },
-                            }));
-
-                            output
-                        },
-                    })));
-
-                    output
-                },
-                gt_token: Default::default(),
-            }),
-        });
-
-        output
-    };
-    loop {
-        if ident_state == 1001 {
-            break;
-        }
-
-        functions.items.push(ImplItem::Fn(ImplItemFn {
+    (1..=1000).for_each(|ident_state| {
+        impl_block.items.push(ImplItem::Fn(ImplItemFn {
             attrs: Default::default(),
             vis: Visibility::Public(Default::default()),
             defaultness: None,
-            sig: Signature {
-                ident: Ident::new(&format!("with_{ident_state}"), Span::call_site()),
-                inputs: {
-                    let mut output = Punctuated::new();
+            sig: {
+                let ident = Ident::new(&format!("with_{ident_state}"), Span::call_site());
+                let (mut generics_output, mut where_output, mut params_output) = (
+                    Punctuated::<GenericParam, Token![,]>::new(),
+                    Punctuated::<WherePredicate, Token![,]>::new(),
+                    Punctuated::<Type, Token![,]>::new(),
+                );
 
-                    output.push_value(FnArg::Typed(PatType {
-                        attrs: Default::default(),
-                        pat: Box::new(Pat::Ident(PatIdent {
-                            attrs: Default::default(),
-                            by_ref: None,
-                            mutability: None,
-                            ident: Ident::new("fields", Span::call_site()),
-                            subpat: None,
-                        })),
-                        colon_token: Default::default(),
-                        ty: Box::new(Type::Tuple(TypeTuple {
-                            paren_token: Default::default(),
-                            elems: {
-                                let (mut output, mut count) = (Punctuated::new(), ident_state);
+                (1..=ident_state).for_each(|ident_state| {
+                    let ident = Ident::new(&format!("T{ident_state}"), Span::call_site());
 
-                                while count != 0 {
-                                    output.push(Type::Path(TypePath {
-                                        qself: None,
-                                        path: Path {
-                                            leading_colon: None,
-                                            segments: dyn_object.clone(),
-                                        },
-                                    }));
-                                    count -= 1;
-                                }
+                    generics_output.push(parse_quote! { #ident });
+                    where_output.push(parse_quote! { for<'a> #ident: 'a + Any });
+                    params_output.push(parse_quote! { #ident });
+                });
 
-                                output
-                            },
-                        })),
-                    }));
+                let (generics, params, where_clause): (_, _, WhereClause) = (
+                    Generics {
+                        lt_token: Default::default(),
+                        params: generics_output,
+                        gt_token: Default::default(),
+                        where_clause: None,
+                    },
+                    TypeTuple {
+                        paren_token: Default::default(),
+                        elems: params_output,
+                    },
+                    parse_quote! { where #where_output },
+                );
 
-                    output
-                },
-                output: ReturnType::Type(
-                    Default::default(),
-                    Box::new(Type::Path(TypePath {
-                        qself: None,
-                        path: Path {
-                            leading_colon: None,
-                            segments: {
-                                let mut output = Punctuated::new();
-                                output.push(PathSegment {
-                                    ident: Ident::new("Self", Span::call_site()),
-                                    arguments: PathArguments::None,
-                                });
-
-                                output
-                            },
-                        },
-                    })),
-                ),
-                constness: None,
-                asyncness: None,
-                unsafety: None,
-                abi: None,
-                variadic: None,
-                fn_token: Default::default(),
-                generics: Default::default(),
-                paren_token: Default::default(),
+                parse_quote! { fn #ident #generics (fields: #params) -> Self #where_clause }
             },
-            block: Block {
-                brace_token: Default::default(),
-                stmts: {
-                    let mut output = Vec::new();
+            block: {
+                let mut output = Punctuated::<ExprCall, Token![,]>::new();
 
-                    // Model:
-                    // trait Sample {}
-                    // struct SampleStruct(Vec<Box<dyn Sample>>);
+                (1..=ident_state).for_each(|ident_state| {
+                    let ident = Index {
+                        index: ident_state - 1,
+                        span: Span::call_site(),
+                    };
+                    let field_access: ExprField = parse_quote! { fields.#ident };
 
-                    // fn sample_impl(fields: (Box<dyn Sample>, Box<dyn Sample>)) -> SampleStruct {
-                    //     SampleStruct(vec![fields.0, fields.1])
-                    // }
+                    output.push(parse_quote! { Box::new(#field_access) });
+                });
 
-                    output
-                },
+                parse_quote! { { Self(vec![#output]) } }
             },
         }));
+    });
 
-        ident_state += 1;
-    }
-
-    TokenStream::from(quote! {
-        #functions
-    })
+    TokenStream::from(quote! { #impl_block })
 }
 
 #[cfg(test)]
 mod tests {
-    use syn::parse_quote;
+    use syn::{
+        ExprCall, ExprField, Generics, Index, TypeTuple, WhereClause, WherePredicate, parse_quote,
+    };
 
     use super::*;
 
     #[test]
     fn it_works() {
-        let preproc_input: SeqPrimitive = parse_quote! {
-            Graph { name: String },
-            Vertex { name: String },
-            Arc { name: String }
+        let mut impl_block = ItemImpl {
+            attrs: Default::default(),
+            defaultness: None,
+            unsafety: None,
+            impl_token: Default::default(),
+            generics: Default::default(),
+            trait_: None,
+            self_ty: Box::new(parse_quote! { FieldBuilder }),
+            brace_token: Default::default(),
+            items: Vec::with_capacity(1000),
         };
-        eprintln!(
-            "{}",
-            quote! {
-                Graph { name: String },
-                Vertex { name: String },
-                Arc { name: String }
-            }
-        );
-        eprintln!();
 
-        let output = preproc_input.tokenize();
-        eprintln!("{}", output);
+        (1..=1000).for_each(|ident_state| {
+            impl_block.items.push(ImplItem::Fn(ImplItemFn {
+                attrs: Default::default(),
+                vis: Visibility::Public(Default::default()),
+                defaultness: None,
+                sig: {
+                    let ident = Ident::new(&format!("with_{ident_state}"), Span::call_site());
+                    let (mut generics_output, mut where_output, mut params_output) = (
+                        Punctuated::<GenericParam, Token![,]>::new(),
+                        Punctuated::<WherePredicate, Token![,]>::new(),
+                        Punctuated::<Type, Token![,]>::new(),
+                    );
+
+                    (1..=ident_state).for_each(|ident_state| {
+                        let ident = Ident::new(&format!("T{ident_state}"), Span::call_site());
+
+                        generics_output.push(parse_quote! { #ident });
+                        where_output.push(parse_quote! { for<'a> #ident: 'a + FieldElem });
+                        params_output.push(parse_quote! { #ident });
+                    });
+
+                    let (generics, params, where_clause): (_, _, WhereClause) = (
+                        Generics {
+                            lt_token: Default::default(),
+                            params: generics_output,
+                            gt_token: Default::default(),
+                            where_clause: None,
+                        },
+                        TypeTuple {
+                            paren_token: Default::default(),
+                            elems: params_output,
+                        },
+                        parse_quote! { where #where_output },
+                    );
+
+                    parse_quote! { fn #ident #generics (fields: #params) -> Self #where_clause }
+                },
+                block: {
+                    let mut output = Punctuated::<ExprCall, Token![,]>::new();
+
+                    (1..=ident_state).for_each(|ident_state| {
+                        let ident = Index {
+                            index: ident_state - 1,
+                            span: Span::call_site(),
+                        };
+                        let field_access: ExprField = parse_quote! { fields.#ident };
+
+                        output.push(parse_quote! { Box::new(#field_access) });
+                    });
+
+                    parse_quote! { { Self(vec![#output]) } }
+                },
+            }));
+        });
+
+        eprintln!("{}", quote! { #impl_block });
     }
 }

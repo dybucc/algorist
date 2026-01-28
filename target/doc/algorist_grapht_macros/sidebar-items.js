@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"attr":["add_fields"],"derive":["TupleConstr"],"macro":["declare"]};
