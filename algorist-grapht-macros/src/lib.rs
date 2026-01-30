@@ -4,7 +4,7 @@ use quote::quote;
 use syn::{
     AngleBracketedGenericArguments, Expr, ExprCall, ExprField, ExprLit, ExprStruct, Field,
     GenericArgument, GenericParam, Generics, Ident, ImplItem, ImplItemFn, Index, ItemFn, ItemImpl,
-    Lit, LitInt, Path, PathArguments, Result as SynResult, Token, TraitBound, Type, TypeParamBound,
+    Lit, Path, PathArguments, Result as SynResult, Token, TraitBound, Type, TypeParamBound,
     TypeTuple, Visibility, WhereClause, WherePredicate, braced,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
@@ -229,34 +229,9 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
     TokenStream::from(quote! { #impl_block })
 }
 
-struct TypeValue {
-    ty: Type,
-    instances: LitInt,
-}
-
-impl TypeValue {
-    fn parse(input: ParseStream) -> SynResult<Self> {
-        Ok(Self {
-            ty: input.parse()?,
-            instances: input.parse()?,
-        })
-    }
-}
-
-struct Spec(Punctuated<TypeValue, Token![,]>);
-
-impl Parse for Spec {
-    fn parse(input: ParseStream) -> SynResult<Self> {
-        Ok(Self(input.parse_terminated(TypeValue::parse, Token![,])?))
-    }
-}
-
 #[proc_macro_attribute]
-pub fn add(input: TokenStream, spec: TokenStream) -> TokenStream {
-    let (mut input, spec) = (
-        parse_macro_input!(input as ItemFn),
-        parse_macro_input!(spec as Spec),
-    );
+pub fn add(_: TokenStream, input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as ItemFn);
 
     TokenStream::from({
         let output = ItemFn {
@@ -265,11 +240,10 @@ pub fn add(input: TokenStream, spec: TokenStream) -> TokenStream {
             sig: {
                 let (ident, inputs, output) = (input.sig.ident, input.sig.inputs, input.sig.output);
                 let generics = input.sig.generics.params;
-                let mut where_clause = input
-                    .sig
-                    .generics
-                    .where_clause
-                    .expect("This attribute is designed for where clauses only.");
+                let mut where_clause =
+                    input.sig.generics.where_clause.expect(
+                        "This attribute is designed for functions with `where` clauses only.",
+                    );
 
                 for bound in &mut where_clause.predicates {
                     if let WherePredicate::Type(pred) = bound {
@@ -336,20 +310,19 @@ pub fn add(input: TokenStream, spec: TokenStream) -> TokenStream {
                             ),
                         );
 
-                        (0..n).for_each(|idx| {});
+                        (0..n).for_each(|idx| {
+                            let n: ExprLit = parse_quote! { #idx };
+                            pred.bounds.push(parse_quote! { Field<#ty, #n> });
+                        });
                     }
                 }
 
-                parse_quote! {
-                    fn #ident <#generics> ( #inputs ) where #where_clause #output
-                }
+                parse_quote! { fn #ident <#generics> ( #inputs ) #where_clause #output }
             },
             block: input.block,
         };
 
-        quote! {
-            #output
-        }
+        quote! { #output }
     })
 }
 
@@ -361,7 +334,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let fn_sample: ItemFn = parse_quote! {
+        let input: ItemFn = parse_quote! {
             fn planar_graph<T>(graph: &mut T)
             where
                 T: GraphBackend + Fields<String, 2>,
@@ -370,7 +343,96 @@ mod tests {
             }
         };
 
-        let sig = fn_sample.sig.generics.where_clause;
-        eprintln!("{:#?}", quote! { #sig });
+        eprintln!("{:#?}", {
+            let output = ItemFn {
+                attrs: input.attrs,
+                vis: input.vis,
+                sig: {
+                    let (ident, inputs, output) =
+                        (input.sig.ident, input.sig.inputs, input.sig.output);
+                    let generics = input.sig.generics.params;
+                    let mut where_clause = input.sig.generics.where_clause.expect(
+                        "This attribute is designed for functions with `where` clauses only.",
+                    );
+
+                    for bound in &mut where_clause.predicates {
+                        if let WherePredicate::Type(pred) = bound {
+                            let TypeParamBound::Trait(TraitBound {
+                            path:
+                                Path {
+                                    segments: fields_trait,
+                                    ..
+                                },
+                            ..
+                        }) = pred.bounds.last().expect(
+                            "There should be at least one trait bound in the function item tagged \
+                            with this attribute.",
+                        )
+                        else {
+                            panic!(
+                                "The attribute should only be called on functions that use \
+                                `Fields` as their last trait bound."
+                            );
+                        };
+                            let PathArguments::AngleBracketed(AngleBracketedGenericArguments {
+                            args,
+                            ..
+                        }) = &fields_trait
+                            .last()
+                            .expect(
+                                "There should at least be one trait bound for the `Fields` trait.",
+                            )
+                            .arguments
+                        else {
+                            panic!(
+                                "The attribute should only be applied to functions that use \
+                                `Fields` as the last trait bound."
+                            );
+                        };
+                            let (
+                            GenericArgument::Type(inner_ty),
+                            GenericArgument::Const(Expr::Lit(ExprLit {
+                                lit: Lit::Int(inner_n),
+                                ..
+                            })),
+                        ) = (
+                            args.first().expect(
+                                "The `Field` trait bound includes as its first argument the type \
+                                of the required fields.",
+                            ),
+                            args.last().expect(
+                                "The `Field` trait bound includes as its second argument the \
+                                amount fields it requires.",
+                            ),
+                        )
+                        else {
+                            panic!(
+                                "The `Field` trait bound includes as its first argument the type \
+                                of the required fields, and as its second argument the amount \
+                                fields it requires."
+                            );
+                        };
+                            let (ty, n) = (
+                                inner_ty.clone(),
+                                inner_n.base10_parse::<usize>().expect(
+                                    "The second argument to the `Fields` trait bound is always an \
+                                integer.",
+                                ),
+                            );
+
+                            (0..n).for_each(|idx| {
+                                let n: ExprLit = parse_quote! { #idx };
+                                pred.bounds.push(parse_quote! { Field<#ty, #n> });
+                            });
+                        }
+                    }
+
+                    parse_quote! { fn #ident <#generics> ( #inputs ) #where_clause #output }
+                },
+                block: input.block,
+            };
+
+            quote! { #output }
+        });
     }
 }
