@@ -1,10 +1,9 @@
 #![allow(dead_code, reason = "The crate is a WIP.")]
 
+use algorist_grapht_macros::add;
 use std::{
     any::{Any, TypeId},
     collections::{HashMap, hash_map::Entry},
-    error::Error,
-    fmt::Display,
 };
 
 #[derive(Debug)]
@@ -23,6 +22,10 @@ struct Graph<'a> {
     arcs: Vec<Arc<'a>>,
     n: usize,
     m: usize,
+    // TODO: see whether this deserves its own API; The generative routines
+    // don't seem to mind it much, but something could be implemented around
+    // existing functionality from the original GraphBase. See GB_GRAPH, Sec.
+    // 26, 27.
     id: Option<usize>,
 }
 
@@ -45,37 +48,22 @@ impl<'a> GraphBackend for Graph<'a> {
         }
     }
 
+    #[doc(alias = "len", alias = "verts")]
     fn n(&self) -> usize {
         self.n
     }
+    #[doc(alias = "len", alias = "arcs")]
     fn m(&self) -> usize {
         self.m
     }
+
+    fn add_arc(&mut self) {}
 }
-
-#[derive(Debug)]
-pub struct FieldError(pub FieldErrorReason);
-
-#[non_exhaustive]
-#[derive(Debug)]
-pub enum FieldErrorReason {
-    NoSuchType,
-    EmptyBuilder,
-}
-
-impl Display for FieldError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            FieldErrorReason::NoSuchType => write!(f, "No such type in this scope."),
-            FieldErrorReason::EmptyBuilder => write!(f, "No types within the `FieldBuilder`."),
-        }
-    }
-}
-
-impl Error for FieldError {}
 
 struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
 
+// TODO: get the `TupleConstr` derive proc-macro fixed to work with the updated
+// signature of `FieldBuilder`.
 impl FieldBuilder {
     fn new() -> Self {
         Self(HashMap::new())
@@ -83,7 +71,7 @@ impl FieldBuilder {
 
     fn add_field<T>(mut self, field: T) -> Self
     where
-        for<'a> T: 'a,
+        for<'a> T: 'a + PartialEq,
     {
         // Can't chain all entry API methods because both of their closures move
         // `field`.
@@ -95,11 +83,9 @@ impl FieldBuilder {
             }
             Entry::Occupied(_) => {
                 self.0.entry(field.type_id()).or_insert_with(|| {
-                    let mut output = Vec::new();
                     let input: Box<dyn Any> = Box::new(field);
-                    output.push(input);
 
-                    output
+                    vec![input]
                 });
             }
         }
@@ -122,24 +108,18 @@ impl FieldBuilder {
         }
     }
 
-    fn consume_all(self) -> Option<Vec<Box<dyn impls::GenericFieldContainer>>> {
-        (!self.0.is_empty()).then(|| {
-            let mut output = Vec::new();
-
-            self.0.into_values().for_each(|elem| {
-                let input: Box<dyn impls::GenericFieldContainer> = Box::new(FieldContainer(elem));
-                output.push(input);
-            });
-
-            output
-        })
-    }
-
-    fn consume_type<T>(&mut self) -> Result<FieldContainer<T>, FieldError>
+    fn consume_fields_of<T>(&mut self) -> Option<FieldContainer<T>>
     where
         for<'a> T: 'a,
     {
-        todo!()
+        self.0.remove(&TypeId::of::<T>()).map(|entry| {
+            FieldContainer(
+                entry
+                    .into_iter()
+                    .map(|elem| *elem.downcast::<T>().unwrap())
+                    .collect(),
+            )
+        })
     }
 }
 
@@ -149,42 +129,14 @@ impl Default for FieldBuilder {
     }
 }
 
-pub struct FieldContainer<T>(Vec<T>);
-
-mod impls {
-    use std::any::Any;
-
-    use crate::FieldContainer;
-
-    pub(crate) trait GenericFieldContainer
-    where
-        Self: Any,
-    {
-    }
-
-    impl<T> GenericFieldContainer for FieldContainer<T> where T: Any {}
-}
-
-pub trait GenericFieldContainer<T> {
-    fn extract(self) -> FieldContainer<T>;
-}
-
-impl<T> GenericFieldContainer<T> for Box<dyn impls::GenericFieldContainer>
-where
-    for<'a> T: 'a,
-{
-    fn extract(mut self) -> FieldContainer<T> {
-        let src = unsafe { Box::from_raw(&mut self as *mut dyn Any) };
-        *src.downcast().unwrap()
-    }
-}
+struct FieldContainer<T>(Vec<T>);
 
 pub trait Field<T, const N: usize> {
     fn get<'a>() -> &'a T;
     fn set(other: &T);
 }
 
-pub trait Fields<T, const N: usize> {}
+trait Fields<T, const N: usize> {}
 
 pub trait GraphBackend {
     type Vertex;
@@ -194,6 +146,21 @@ pub trait GraphBackend {
 
     fn n(&self) -> usize;
     fn m(&self) -> usize;
+
+    fn add_arc(&mut self);
+}
+
+impl<T> Fields<String, 2> for T where T: Field<String, 0> + Field<String, 1> {}
+
+#[expect(private_bounds)]
+#[cfg_attr(not(doc), add)]
+pub fn planar_graph<T>(_: &T)
+where
+    T: GraphBackend + Fields<String, 2>,
+    T::Vertex: Fields<u32, 1>,
+{
+    <T as Field<String, 0>>::get();
+    <T::Vertex as Field<u32, 0>>::get();
 }
 
 #[cfg(test)]

@@ -148,9 +148,12 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
     // Model:
     #[expect(unused)]
     {
-        use std::any::Any;
+        use std::{
+            any::{Any, TypeId},
+            collections::HashMap,
+        };
 
-        struct SampleStruct(Vec<Box<dyn Any>>);
+        struct SampleStruct(HashMap<TypeId, Vec<Box<dyn Any>>>);
 
         impl SampleStruct {
             fn sample_impl<T1, T2>(fields: (T1, T2)) -> Self
@@ -158,7 +161,12 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
                 for<'a> T1: 'a,
                 for<'a> T2: 'a,
             {
-                Self(vec![Box::new(fields.0), Box::new(fields.1)])
+                let mut input: HashMap<_, Vec<Box<dyn Any>>> = HashMap::new();
+
+                input.insert(fields.0.type_id(), vec![Box::new(fields.0)]);
+                input.insert(fields.1.type_id(), vec![Box::new(fields.1)]);
+
+                Self(input)
             }
         }
     }
@@ -175,7 +183,7 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
         items: Vec::with_capacity(1000),
     };
 
-    (1..=1000).for_each(|ident_state| {
+    (1..=16).for_each(|ident_state| {
         let (mut generics_output, mut where_output, mut params_output, mut block_output) = (
             Punctuated::<GenericParam, Token![,]>::new(),
             Punctuated::<WherePredicate, Token![,]>::new(),
