@@ -1,9 +1,15 @@
-#![allow(dead_code, reason = "The crate is a WIP.")]
+#![expect(dead_code, reason = "The crate is a WIP.")]
 
-use crate::api::GraphBackend;
+use crate::api::{GraphBackend, IndexerExt, VertexEntryExt};
 
 mod api;
 mod fields;
+mod private {
+    pub(crate) trait Sealed {}
+}
+
+const ARC_ALLOCS: usize = 102;
+const EXTRA_N: usize = 4;
 
 #[derive(Debug)]
 struct Arc<'a> {
@@ -28,18 +34,42 @@ struct Graph<'a> {
     id: Option<usize>,
 }
 
+struct GraphError(GraphErrorReason);
+
+enum GraphErrorReason {
+    NoVerticesInGraph,
+}
+
+enum VertexEntry<'a> {
+    Shared(*const Graph<'a>, *const Vertex<'a>),
+    Mutable(*mut Graph<'a>, *mut Vertex<'a>),
+}
+
+impl IndexerExt for usize {
+    fn get(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a> VertexEntryExt for Option<VertexEntry<'a>> {
+    fn and_insert_arc(&mut self, f: impl FnMut(&mut Self, Self)) {
+        todo!()
+    }
+}
+
 impl<'a> GraphBackend for Graph<'a> {
     type Vertex = Vertex<'a>;
     type Arc = Arc<'a>;
-    type Error = GraphError;
 
-    const ARC_ALLOCS: usize = 102;
-    const EXTRA_N: usize = 4;
+    type VertexEntry = VertexEntry<'a>;
+
+    type Indexer = usize;
+    type Error = GraphError;
 
     fn new(n: usize) -> Self {
         Graph {
             vertices: {
-                let mut output = Vec::with_capacity(n + Self::EXTRA_N);
+                let mut output = Vec::with_capacity(n + EXTRA_N);
                 output.resize_with(n, || Vertex { arcs: Vec::new() });
 
                 output
@@ -58,43 +88,38 @@ impl<'a> GraphBackend for Graph<'a> {
         self.m
     }
 
-    fn get(&self, idx: usize) -> Option<&Self::Vertex> {
-        self.vertices.get(idx)
+    fn get(&self, idx: Self::Indexer) -> Option<Self::VertexEntry> {
+        todo!()
     }
-    fn get_mut(&mut self, idx: usize) -> Option<&mut Self::Vertex> {
-        self.vertices.get_mut(idx)
+    fn get_mut(&mut self, idx: Self::Indexer) -> Option<Self::VertexEntry> {
+        todo!()
     }
-}
 
-struct GraphError(GraphErrorReason);
-
-enum GraphErrorReason {
-    NoVerticesInGraph,
+    fn get_indexer(&self, elem: &Self::Vertex) -> Option<Self::Indexer> {
+        todo!()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use algorist_grapht_macros::add;
-
-    use super::*;
-
     #[test]
     fn it_works() {
-        let mut graph = Graph::new(10);
+        // let mut graph = Graph::new(10);
 
-        graph.get_mut(2).and_insert_arc();
-        graph.get_mut(2).new_arc(graph.get_vert(3));
+        // graph.get_mut(3).expect("test").and_insert_arc(2);
 
-        // TODO: implement a macro that lets me access each field more
-        // ergonomically inside of the function.
-        #[cfg_attr(not(doc), add)]
-        fn planar_graph<T>(_: &T)
-        where
-            T: GraphBackend + Fields<String, 2>,
-            T::Vertex: Fields<u32, 1>,
-        {
-            <T as Field<String, 0>>::get();
-            <T::Vertex as Field<u32, 0>>::get();
-        }
+        // // TODO: implement a macro that lets me access each field more
+        // // ergonomically inside of the function.
+        // #[cfg_attr(not(doc), add)]
+        // fn planar_graph<T>(g: &T)
+        // where
+        //     T: GraphBackend + Fields<String, 2>,
+        //     T::Vertex: Fields<u32, 1>,
+        // {
+        //     <T as Field<String, 0>>::get(g);
+        //     <T::Vertex as Field<u32, 0>>::get(
+        //         <T as GraphBackend>::get(g, <T as GraphBackend>::Indexer { field: 0 }).unwrap(),
+        //     );
+        // }
     }
 }

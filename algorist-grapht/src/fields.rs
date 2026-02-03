@@ -1,15 +1,21 @@
-use std::any::Any;
-use std::any::TypeId;
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::ops::DerefMut;
+use std::{
+    any::{Any, TypeId},
+    collections::HashMap,
+    ops::{Deref, DerefMut},
+};
 
-trait Field<T, const N: usize> {
-    fn get<'a>() -> &'a T;
-    fn set(other: &T);
+use crate::private::Sealed;
+
+pub(crate) trait Field<T, const N: usize> {
+    fn get(&self) -> &T;
+    fn set(&mut self, other: &T);
 }
 
-trait Fields<T, const N: usize> {}
+pub(crate) trait Fields<T, const N: usize>
+where
+    Self: Sealed,
+{
+}
 
 struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
 
