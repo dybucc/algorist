@@ -2,14 +2,10 @@ pub(crate) trait GraphBackend
 where
     Self: Sized,
     Self::Indexer: IndexerExt,
-    Self::MutVertexEntry: MutVertexEntryExt,
-    Self::SharedVertexEntry: SharedVertexEntryExt,
+    Self::Arc: ArcExt<Self>,
 {
     type Vertex;
     type Arc;
-
-    type MutVertexEntry;
-    type SharedVertexEntry;
 
     type Indexer;
     type Error;
@@ -19,8 +15,7 @@ where
     fn n(&self) -> usize;
     fn m(&self) -> usize;
 
-    fn get(&self, idx: Self::Indexer) -> Option<Self::SharedVertexEntry>;
-    fn get_mut(&mut self, idx: Self::Indexer) -> Option<Self::MutVertexEntry>;
+    fn new_arc(&mut self, other: Self::Indexer) -> &Self::Arc;
 
     fn get_indexer(&self, elem: &Self::Vertex) -> Option<Self::Indexer>;
 }
@@ -29,9 +24,9 @@ pub(crate) trait IndexerExt {
     fn get(&self) -> Self;
 }
 
-pub(crate) trait MutVertexEntryExt {
-    fn and_insert_arc(&mut self, other: Self) -> Option<()>;
+pub(crate) trait ArcExt<T>
+where
+    T: GraphBackend,
+{
+    fn set_dst(&self, other: &T::Vertex) -> Option<()>;
 }
-
-// TODO: find usecase in API for an immutable view into a vertex.
-pub(crate) trait SharedVertexEntryExt {}

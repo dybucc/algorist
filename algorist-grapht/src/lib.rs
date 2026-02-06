@@ -1,8 +1,8 @@
 #![expect(dead_code, reason = "The crate is a WIP.")]
 
-use std::marker::PhantomData;
+use std::sync::Arc as ArcPtr;
 
-use crate::api::{GraphBackend, IndexerExt, MutVertexEntryExt, SharedVertexEntryExt};
+use crate::api::{ArcExt, GraphBackend, IndexerExt};
 
 mod api;
 mod fields;
@@ -14,34 +14,34 @@ const ARC_ALLOCS: usize = 102;
 const EXTRA_N: usize = 4;
 
 #[derive(Debug)]
-struct Arc<'a> {
-    tip: &'a Vertex<'a>,
+struct Arc {
+    tip: ArcPtr<Vertex>,
     id: Option<usize>,
 }
 
-impl PartialEq for Arc<'_> {
+impl PartialEq for Arc {
     fn eq(&self, other: &Self) -> bool {
         self.id.eq(&other.id)
     }
 }
 
 #[derive(Debug)]
-struct Vertex<'a> {
-    arcs: Vec<&'a Arc<'a>>,
+struct Vertex {
+    arcs: Vec<ArcPtr<Arc>>,
     // TODO: get UUID generation working
     id: Option<usize>,
 }
 
-impl PartialEq for Vertex<'_> {
+impl PartialEq for Vertex {
     fn eq(&self, other: &Self) -> bool {
         self.id.eq(&other.id)
     }
 }
 
 #[derive(Debug)]
-struct Graph<'a> {
-    vertices: Vec<Vertex<'a>>,
-    arcs: Vec<Arc<'a>>,
+struct Graph {
+    vertices: Vec<ArcPtr<Vertex>>,
+    arcs: Vec<ArcPtr<Arc>>,
     n: usize,
     m: usize,
     // TODO: get UUID generation working
@@ -54,56 +54,24 @@ enum GraphErrorReason {
     NoVerticesInGraph,
 }
 
-struct MutVertexEntry<'a> {
-    graph: *mut Graph<'a>,
-    inner: *mut Vertex<'a>,
-    _marker: PhantomData<&'a mut Vertex<'a>>,
-}
-
-struct SharedVertexEntry<'a> {
-    graph: *const Graph<'a>,
-    inner: *const Vertex<'a>,
-    _marker: PhantomData<&'a Vertex<'a>>,
-}
-
 impl IndexerExt for usize {
     fn get(&self) -> Self {
         *self
     }
 }
 
-impl MutVertexEntryExt for MutVertexEntry<'_> {
-    fn and_insert_arc(&mut self, other: Self) -> Option<()> {
-        let handle = unsafe { &mut *self.graph };
-        let vert_pos = handle
-            .vertices
-            .iter()
-            .position(|elem| *elem == unsafe { self.inner.read() })?;
-        (handle
-            .arcs
-            .iter()
-            .any(|inner_arc| handle.vertices[vert_pos].arcs.contains(&inner_arc)))
-        .then(|| {
-            handle.arcs.push(Arc {
-                tip: unsafe { &*other.inner },
-                id: None,
-            });
-            handle.vertices[vert_pos]
-                .arcs
-                .push(handle.arcs.last().unwrap());
-        });
-        Some(())
+impl<T> ArcExt<T> for Arc
+where
+    T: GraphBackend,
+{
+    fn set_dst(&self, other: &<T as GraphBackend>::Vertex) -> Option<()> {
+        todo!();
     }
 }
 
-impl SharedVertexEntryExt for SharedVertexEntry<'_> {}
-
-impl<'a> GraphBackend for Graph<'a> {
-    type Vertex = Vertex<'a>;
-    type Arc = Arc<'a>;
-
-    type MutVertexEntry = MutVertexEntry<'a>;
-    type SharedVertexEntry = SharedVertexEntry<'a>;
+impl GraphBackend for Graph {
+    type Vertex = Vertex;
+    type Arc = Arc;
 
     type Indexer = usize;
     type Error = GraphError;
@@ -112,10 +80,13 @@ impl<'a> GraphBackend for Graph<'a> {
         Graph {
             vertices: {
                 let mut output = Vec::with_capacity(n + EXTRA_N);
-                output.resize_with(n, || Vertex {
-                    arcs: Vec::new(),
-                    id: None,
+                output.resize_with(n, || {
+                    ArcPtr::new(Vertex {
+                        arcs: Vec::new(),
+                        id: None,
+                    })
                 });
+
                 output
             },
             arcs: Vec::new(),
@@ -132,39 +103,28 @@ impl<'a> GraphBackend for Graph<'a> {
         self.m
     }
 
-    fn get(&self, idx: Self::Indexer) -> Option<Self::SharedVertexEntry> {
-        todo!()
-    }
-    fn get_mut(&mut self, idx: Self::Indexer) -> Option<Self::MutVertexEntry> {
-        let graph = &raw mut *self;
-        self.vertices.get_mut(idx).map(|elem| {
-            let inner = &raw mut *elem;
-            MutVertexEntry {
-                graph,
-                inner,
-                _marker: PhantomData,
-            }
-        })
+    fn new_arc(&mut self, src: Self::Indexer) -> &Self::Arc {
+        self.arcs.push(ArcPtr::new(Arc {
+            tip: ArcPtr::clone(&self.vertices[src]),
+            id: None,
+        }));
+        self.arcs.last().expect(
+            "the `arcs` arena just allocated a new element so accessing it should be infallible",
+        )
     }
 
     fn get_indexer(&self, elem: &Self::Vertex) -> Option<Self::Indexer> {
-        self.vertices.iter().position(|inner| inner == elem)
+        self.vertices.iter().position(|inner| **inner == *elem)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused, reason = "WIP.")]
     use super::*;
 
     #[test]
     fn it_works() {
-        let mut graph = Graph::new(10);
-        // TODO: check that the vertices before and after insertion correspond.
-        assert_eq!(graph.vertices, vec![]);
-        graph
-            .get_mut(3)
-            .unwrap()
-            .and_insert_arc(graph.get_mut(2).unwrap());
         // // TODO: implement a macro that lets me access each field more
         // // ergonomically inside of the function.
         // #[cfg_attr(not(doc), add)]
