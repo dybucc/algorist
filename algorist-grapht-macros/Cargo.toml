@@ -1,12 +1,18 @@
 [package]
 name = "algorist-grapht-macros"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0.105"
-quote = "1.0.43"
+proc-macro2 = "1.0.106"
+quote = "1.0.44"
 syn = { version = "2.0.114", features = ["full"] }

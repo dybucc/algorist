@@ -94,12 +94,12 @@ impl<T> DerefMut for FieldContainer<T> {
 
 impl<T> AsRef<Vec<T>> for FieldContainer<T> {
     fn as_ref(&self) -> &Vec<T> {
-        self.deref()
+        self
     }
 }
 
 impl<T> AsMut<Vec<T>> for FieldContainer<T> {
     fn as_mut(&mut self) -> &mut Vec<T> {
-        self.deref_mut()
+        self
     }
 }
