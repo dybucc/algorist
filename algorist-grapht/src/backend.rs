@@ -1,132 +1,81 @@
-use std::{ascii::Char, collections::TryReserveErrorKind, sync::Arc as ArcPtr};
+use std::rc::Rc;
 
+use bumpalo::Bump;
 use thiserror::Error;
 
-use crate::api::{GraphBackend, IndexerExt};
+use crate::api::GraphBackend;
 
 #[derive(Debug)]
-struct Arc {
-    tip: ArcPtr<Vertex>,
-    id: Option<usize>,
+pub(crate) struct Arc<T> {
+    tip: Option<Rc<Vertex<T>>>,
 }
 
-impl PartialEq for Arc {
+#[derive(Debug)]
+pub(crate) struct Vertex<T> {
+    arcs: Option<Vec<Rc<Arc<T>>>>,
+    inner: T,
+}
+
+impl<T> PartialEq for Vertex<T>
+where
+    T: PartialEq,
+{
     fn eq(&self, other: &Self) -> bool {
-        self.id.eq(&other.id)
+        self.inner == other.inner
     }
 }
 
 #[derive(Debug)]
-struct Vertex {
-    arcs: Vec<ArcPtr<Arc>>,
-    // TODO: get UID generation working
-    id: Option<usize>,
-}
-
-impl PartialEq for Vertex {
-    fn eq(&self, other: &Self) -> bool {
-        self.id.eq(&other.id)
-    }
-}
-
-#[derive(Debug)]
-struct Graph {
-    vertices: Vec<ArcPtr<Vertex>>,
-    arcs: Vec<ArcPtr<Arc>>,
+pub(crate) struct Graph<T> {
+    vertices: BumpVec<Rc<Vertex<T>>>,
+    arcs: BumpVec<Rc<Arc<T>>>,
+    arena: Bump,
     n: usize,
     m: usize,
-    // TODO: get UID generation working
-    id: Option<usize>,
 }
 
-impl Graph {
+impl<T> Graph<T> {
     const EXTRA_N: usize = 4;
 }
 
 #[derive(Error, Debug)]
-enum GraphError {
-    #[error("graph creation failed: {0}")]
-    GraphCreationError(GraphCreationError),
+pub(crate) enum GraphError {
+    #[error("allocation error: {0}")]
+    AllocError(#[from] AllocError),
 }
 
-impl From<GraphCreationError> for GraphError {
-    fn from(value: GraphCreationError) -> Self {
-        Self::GraphCreationError(value)
-    }
+#[derive(Debug, Error)]
+#[error("failed to allocate requested memory during {} allocation", .0)]
+pub(crate) struct AllocError(AllocErrorSrc);
+
+#[derive(Debug, Error)]
+enum AllocErrorSrc {
+    #[error("arc")]
+    ArcAlloc,
+    #[error("vertex")]
+    VertAlloc,
 }
 
-#[derive(Error, Debug)]
-enum GraphCreationError {
-    #[error("allocation failed during {src}: {reason}", src = crate::parse_ascii_char(.src))]
-    AllocationFailed {
-        reason: AllocationReason,
-        src: Box<[Char]>,
-    },
-}
+impl<T> GraphBackend for Graph<T>
+where
+    T: Default,
+{
+    type Vertex = Rc<Vertex<T>>;
+    type Arc = Rc<Arc<T>>;
 
-#[derive(Error, Debug)]
-enum AllocationReason {
-    #[error("capacity surpasses {max}", max = isize::MAX)]
-    CapacityOverflow,
-    #[error("allocator memory request failed")]
-    AllocatorError,
-}
-
-impl IndexerExt for usize {
-    fn get(&self) -> Self {
-        *self
-    }
-}
-
-impl GraphBackend for Graph {
-    type Vertex = ArcPtr<Vertex>;
-    type Arc = ArcPtr<Arc>;
-
-    type Indexer = usize;
     type Error = GraphError;
 
-    fn new(n: usize) -> Self::Result<Self> {
-        Ok(Graph {
-            vertices: {
-                let mut output = Vec::new();
-                output
-                    .try_reserve(n + Graph::EXTRA_N)
-                    .map(|()| {
-                        output.resize_with(n, || {
-                            ArcPtr::new(Vertex {
-                                arcs: Vec::new(),
-                                id: None,
-                            })
-                        });
-                    })
-                    .map_err(|elem| match elem.kind() {
-                        TryReserveErrorKind::CapacityOverflow => {
-                            GraphCreationError::AllocationFailed {
-                                reason: AllocationReason::CapacityOverflow,
-                                src: crate::error!("vertex arena allocation"),
-                            }
-                        }
-                        TryReserveErrorKind::AllocError { .. } => {
-                            GraphCreationError::AllocationFailed {
-                                reason: AllocationReason::AllocatorError,
-                                src: crate::error!("vertex arena allocation"),
-                            }
-                        }
-                    })?;
-
-                output
-            },
-            arcs: Vec::new(),
-            n,
-            m: 0,
-            id: None,
-        })
+    default fn new(n: usize) -> <Self as GraphBackend>::Result<Self> {
+        let arena = Bump::try_with_capacity(n + Graph::EXTRA_N)?;
+        Ok(Graph { vertices: {
+            let output
+        }, arcs: (), arena, n, m: () })
     }
 
-    fn n(&self) -> usize {
+    default fn n(&self) -> usize {
         self.n
     }
-    fn m(&self) -> usize {
+    default fn m(&self) -> usize {
         self.m
     }
 }

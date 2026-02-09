@@ -14,5 +14,6 @@ workspace = true
 
 [dependencies]
 algorist-grapht-macros = { path = "../algorist-grapht-macros" }
+bumpalo = { version = "3.19.1", features = ["allocator_api", "boxed", "collections", "std"] }
 itertools = "0.14.0"
 thiserror = "2.0.18"

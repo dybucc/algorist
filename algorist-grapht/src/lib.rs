@@ -1,18 +1,17 @@
-#![feature(associated_type_defaults, try_reserve_kind, ascii_char)]
+#![feature(
+    associated_type_defaults,
+    try_reserve_kind,
+    ascii_char,
+    min_specialization,
+    allocator_api
+)]
 #![expect(dead_code, reason = "The crate is a WIP.")]
-
-use std::ascii::Char;
 
 mod api;
 mod backend;
 mod fields;
 mod private {
     pub(crate) trait Sealed {}
-}
-
-#[inline]
-fn parse_ascii_char(input: &[Char]) -> &str {
-    input.as_str()
 }
 
 #[macro_export]
@@ -26,9 +25,6 @@ macro_rules! error {
 
 #[cfg(test)]
 mod tests {
-    #[expect(unused, reason = "WIP.")]
-    use super::*;
-
     #[test]
     fn it_works() {
         // // TODO: implement a macro that lets me access each field more

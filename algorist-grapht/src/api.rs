@@ -3,23 +3,16 @@ use std::error::Error;
 pub(crate) trait GraphBackend
 where
     Self: Sized,
-    Self::Indexer: IndexerExt,
-    Self::Error: Error,
+    <Self as GraphBackend>::Error: Error,
 {
     type Vertex;
     type Arc;
 
-    type Indexer;
     type Error;
+    type Result<T> = Result<T, <Self as GraphBackend>::Error>;
 
-    type Result<T> = Result<T, Self::Error>;
-
-    fn new(n: usize) -> Self::Result<Self>;
+    fn new(n: usize) -> <Self as GraphBackend>::Result<Self>;
 
     fn n(&self) -> usize;
     fn m(&self) -> usize;
-}
-
-pub(crate) trait IndexerExt {
-    fn get(&self) -> Self;
 }
