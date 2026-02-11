@@ -6,6 +6,13 @@ use std::{
 
 use crate::private::Sealed;
 
+// TODO: fix the `add` macro on functions with the `Fields` trait to instead
+// replace the whole trait item with the corresponding `Field`s.
+
+// TODO: fix the `FieldBuilder` API to allow for fallible operations when
+// performing allocations, and get rid of the `FieldContainer`; See the Rust API
+// guidelines on the use of `Deref` and friends.
+
 pub(crate) trait Field<T, const N: usize> {
     fn get(&self) -> &T;
     fn set(&mut self, other: &T);
@@ -20,7 +27,8 @@ where
 struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
 
 // TODO: get the `TupleConstr` derive proc-macro fixed to work with the updated
-// signature of `FieldBuilder`.
+// signature of `FieldBuilder`; Take note of the Rust API guidelines advice on
+// macro hygiene.
 impl FieldBuilder {
     fn new() -> Self {
         Self(HashMap::new())

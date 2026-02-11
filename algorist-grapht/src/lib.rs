@@ -1,32 +1,26 @@
 #![feature(
     associated_type_defaults,
-    try_reserve_kind,
     ascii_char,
     min_specialization,
     allocator_api
 )]
 #![expect(dead_code, reason = "The crate is a WIP.")]
 
-mod api;
-mod backend;
-mod fields;
+pub mod api;
+pub mod backend;
+pub mod fields;
 mod private {
     pub(crate) trait Sealed {}
 }
 
-#[macro_export]
-macro_rules! error {
-    ($e:expr) => {
-        $e.as_ascii()
-            .expect("error messages don't contain non-ascii characters")
-            .into()
-    };
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::{api::GraphBackend, backend::Graph};
+
     #[test]
     fn it_works() {
+        let graph = Graph::new(10);
+
         // // TODO: implement a macro that lets me access each field more
         // // ergonomically inside of the function.
         // #[cfg_attr(not(doc), add)]
