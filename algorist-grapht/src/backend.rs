@@ -1,72 +1,74 @@
-use std::{fmt::Display, mem::MaybeUninit, rc::Rc};
+use std::{
+    alloc::AllocError,
+    fmt::{Display, Formatter},
+    rc::Rc,
+    slice::IterMut,
+};
 
-use bumpalo::Bump;
-use num_traits::{PrimInt, Unsigned};
+use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::GraphBackend;
+use crate::api::{GraphBackend, Indexer};
 
 #[derive(Debug)]
 pub(crate) struct Arc {
     tip: Option<Rc<Vertex>>,
 }
 
+impl PartialEq for Arc {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((&self.tip, &other.tip), (Some(tip1), Some(tip2)) if Rc::ptr_eq(tip1, tip2))
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Vertex {
-    arcs: Option<Vec<Rc<Arc>>>,
+    arcs: Vec<Rc<Arc>>,
 }
 
 #[derive(Debug)]
-pub(crate) struct Graph<'a> {
-    vertices: Vec<Rc<Vertex>, &'a Bump>,
-    arcs: Vec<Rc<Arc>, &'a Bump>,
-    arena_ref: &'a Bump,
-    arena: Bump,
-    n: usize,
-    m: usize,
+pub(crate) struct Graph {
+    vertices: Vec<Rc<Vertex>>,
+    arcs: Vec<Rc<Arc>>,
 }
 
-impl Graph<'_> {
+impl Graph {
     const EXTRA_N: usize = 4;
+
+    pub(crate) fn iter_mut(&mut self) -> IterMut<'_, Rc<Vertex>> {
+        self.vertices.iter_mut()
+    }
 }
 
-#[derive(Error, Debug)]
-pub enum GraphError {
-    #[error("failed to create graph: {0}")]
-    GraphCreationError(#[from] GraphCreationError),
-}
+struct Iter {}
 
-#[derive(Debug, Error)]
-pub enum GraphCreationError {
-    #[cfg(not(doc))]
-    #[expect(
-        private_interfaces,
-        reason = "`AllocErrorSrc` is meant to provide a private error representation with \
-                 call-site information."
-    )]
-    #[error("failed to allocate requested memory: {0}")]
-    AllocError(#[from] AllocErrorSrc),
+pub(crate) struct Index(pub(crate) Option<usize>);
 
-    #[error("failed to parse input number of vertices")]
-    ParseIntError,
-
-    #[cfg(doc)]
-    #[error("")]
-    AllocError(),
+impl From<usize> for Index {
+    fn from(value: usize) -> Self {
+        Self(Some(value))
+    }
 }
 
 #[derive(Debug, Error)]
+pub(crate) enum GraphCreationError {
+    #[error("failed to allocate requested memory: allocation of {0} failed")]
+    AllocError(AllocErrorSrc),
+}
+
+#[derive(Debug)]
 pub(crate) enum AllocErrorSrc {
-    #[error("allocation of arena blocks failed")]
     ArenaAlloc,
-
-    #[cfg(not(doc))]
-    #[error("allocation of {} {} failed", .0.0, .0.1)]
     ItemInArena(ItemInArena),
+}
 
-    #[cfg(doc)]
-    #[error("")]
-    ItemInArena(),
+impl Display for AllocErrorSrc {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ArenaAlloc => write!(f, "arena blocks"),
+            Self::ItemInArena(item) => write!(f, "{} {}", item.0, item.1),
+        }
+    }
 }
 
 impl From<ItemInArena> for AllocErrorSrc {
@@ -85,7 +87,7 @@ pub(crate) enum ArenaItemType {
 }
 
 impl Display for ArenaItemType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use ArenaItemType::{Arc, Vert};
 
         match self {
@@ -95,59 +97,60 @@ impl Display for ArenaItemType {
     }
 }
 
-impl GraphBackend for Graph<'_> {
-    // TODO: see into providing a borrowed view into vertices and/or arcs with
-    //       a different data type.
-    type BorrowedVertex = Vertex;
-    type BorrowedArc = Arc;
-
+impl GraphBackend for Graph {
     type Vertex = Vertex;
     type Arc = Arc;
 
-    type Magnitude = usize;
+    type CreationResult = Result<Graph, GraphCreationError>;
 
-    type Error = GraphError;
-
-    default fn new<R>(n: R) -> <Self as GraphBackend>::Result<Self>
+    fn new<T>(n: T) -> Self::CreationResult
     where
-        R: PrimInt + Unsigned,
+        T: AsPrimitive<usize>,
     {
-        let n = n.to_usize().ok_or(GraphCreationError::ParseIntError)?;
-        let mut graph: MaybeUninit<Self> = MaybeUninit::uninit();
-        let handle = graph.as_mut_ptr();
+        let n = n.as_();
 
-        unsafe {
-            (&raw mut (*handle).arena).write(
-                Bump::try_with_capacity((n + Graph::EXTRA_N) * size_of::<Self::Vertex>())
-                    .map_err(|_| GraphCreationError::from(AllocErrorSrc::ArenaAlloc))?,
-            );
-            (&raw mut (*handle).arena_ref).write((&raw const (*handle).arena).as_ref_unchecked());
+        Ok(Graph {
+            vertices: (0..n)
+                .try_fold(
+                    Vec::try_with_capacity(n + Graph::EXTRA_N)
+                        .map_err(|_| GraphCreationError::AllocError(AllocErrorSrc::ArenaAlloc))?,
+                    |mut output, _| {
+                        output.push(Rc::try_new(Vertex { arcs: Vec::new() })?);
 
-            (&raw mut (*handle).vertices).write(
-                Vec::try_with_capacity_in(
-                    n + Graph::EXTRA_N,
-                    (&raw const (*handle).arena_ref).read(),
+                        Ok::<_, AllocError>(output)
+                    },
                 )
                 .map_err(|_| {
-                    GraphCreationError::from(AllocErrorSrc::from(ItemInArena(
+                    GraphCreationError::AllocError(AllocErrorSrc::ItemInArena(ItemInArena(
                         n,
                         ArenaItemType::Vert,
                     )))
                 })?,
-            );
-            (&raw mut (*handle).arcs).write(Vec::new_in((&raw const (*handle).arena_ref).read()));
+            arcs: Vec::new(),
+        })
+    }
+}
 
-            (&raw mut (*handle).n).write(n);
-            (&raw mut (*handle).m).write(0);
+pub(crate) mod cmds {
+    use thiserror::Error;
+
+    use crate::api::{CommandMut, GraphBackend, Indexer, Insertion};
+
+    #[derive(Debug, Error)]
+    pub(crate) enum InsertionError {}
+
+    impl<'a, T, I, U> CommandMut<Result<(), InsertionError>> for Insertion<'a, T, I, U>
+    where
+        U: GraphBackend,
+        T: Indexer<I>,
+        I: Iterator<Item = &'a mut U::Vertex>,
+        U::Vertex: 'a,
+    {
+        fn execute<R>(self, graph: &mut R) -> Result<(), InsertionError>
+        where
+            R: GraphBackend,
+        {
+            todo!()
         }
-
-        Ok(unsafe { graph.assume_init() })
-    }
-
-    default fn n(&self) -> Self::Magnitude {
-        self.n
-    }
-    default fn m(&self) -> Self::Magnitude {
-        self.m
     }
 }

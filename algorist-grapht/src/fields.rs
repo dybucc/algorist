@@ -1,7 +1,6 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
-    ops::{Deref, DerefMut},
 };
 
 use crate::private::Sealed;
@@ -24,7 +23,7 @@ where
 {
 }
 
-struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
+pub(crate) struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
 
 // TODO: get the `TupleConstr` derive proc-macro fixed to work with the updated
 // signature of `FieldBuilder`; Take note of the Rust API guidelines advice on
@@ -84,30 +83,16 @@ impl FieldBuilder {
     }
 }
 
-struct FieldContainer<T>(Vec<T>);
-
-impl<T> Deref for FieldContainer<T> {
-    type Target = Vec<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for FieldContainer<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
+pub(crate) struct FieldContainer<T>(Vec<T>);
 
 impl<T> AsRef<Vec<T>> for FieldContainer<T> {
     fn as_ref(&self) -> &Vec<T> {
-        self
+        &self.0
     }
 }
 
 impl<T> AsMut<Vec<T>> for FieldContainer<T> {
     fn as_mut(&mut self) -> &mut Vec<T> {
-        self
+        &mut self.0
     }
 }
