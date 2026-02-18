@@ -1,14 +1,14 @@
 use std::{
     alloc::AllocError,
     fmt::{Display, Formatter},
+    marker::PhantomData,
     rc::Rc,
-    slice::IterMut,
 };
 
 use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::{GraphBackend, Indexer};
+use crate::api::GraphBackend;
 
 #[derive(Debug)]
 pub(crate) struct Arc {
@@ -32,21 +32,82 @@ pub(crate) struct Graph {
     arcs: Vec<Rc<Arc>>,
 }
 
+#[derive(Debug, Error)]
+#[error("failed to allocate auxiliary memory")]
+pub(crate) struct CloneShallowError;
+
+#[derive(Debug, Error)]
+pub(crate) enum IterMutError {
+    #[error("failed to allocate auxiliary memory")]
+    AllocFailed,
+    #[error("vertex with index {0} is not uniquely owned")]
+    NonUniqueOwnersip(usize),
+}
+
 impl Graph {
     const EXTRA_N: usize = 4;
 
-    pub(crate) fn iter_mut(&mut self) -> IterMut<'_, Rc<Vertex>> {
-        self.vertices.iter_mut()
+    pub(crate) fn clone_shallow(&self) -> Result<Graph, CloneShallowError> {
+        Ok(Self {
+            vertices: self.vertices.iter().fold(
+                Vec::try_with_capacity(self.vertices.len()).map_err(|_| CloneShallowError)?,
+                |mut container, ptr| {
+                    container.push(Rc::clone(ptr));
+
+                    container
+                },
+            ),
+            arcs: self.arcs.iter().fold(
+                Vec::try_with_capacity(self.arcs.len()).map_err(|_| CloneShallowError)?,
+                |mut container, ptr| {
+                    container.push(Rc::clone(ptr));
+
+                    container
+                },
+            ),
+        })
+    }
+
+    pub(crate) fn try_iter_mut(&mut self) -> Result<IterMut<'_>, IterMutError> {
+        let len = self.vertices.len();
+
+        Ok(IterMut {
+            container: self.vertices.iter_mut().enumerate().try_fold(
+                Vec::try_with_capacity(len).map_err(|_| IterMutError::AllocFailed)?,
+                |mut container, (idx, ptr)| {
+                    container.push(
+                        &raw mut *Rc::get_mut(ptr).ok_or(IterMutError::NonUniqueOwnersip(idx))?,
+                    );
+
+                    Ok(container)
+                },
+            )?,
+            idx: None,
+            _marker: PhantomData,
+        })
     }
 }
 
-struct Iter {}
+pub(crate) struct IterMut<'a> {
+    container: Vec<*mut Vertex>,
+    idx: Option<usize>,
+    _marker: PhantomData<&'a mut Vertex>,
+}
 
-pub(crate) struct Index(pub(crate) Option<usize>);
+impl<'a> Iterator for IterMut<'a> {
+    type Item = &'a mut Vertex;
 
-impl From<usize> for Index {
-    fn from(value: usize) -> Self {
-        Self(Some(value))
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.idx {
+            None => {
+                self.idx = Some(0);
+                self.container.first().map(|ptr| unsafe { &mut **ptr })
+            }
+            Some(ref mut idx) => {
+                *idx += 1;
+                self.container.get(*idx).map(|ptr| unsafe { &mut **ptr })
+            }
+        }
     }
 }
 
@@ -131,26 +192,4 @@ impl GraphBackend for Graph {
     }
 }
 
-pub(crate) mod cmds {
-    use thiserror::Error;
-
-    use crate::api::{CommandMut, GraphBackend, Indexer, Insertion};
-
-    #[derive(Debug, Error)]
-    pub(crate) enum InsertionError {}
-
-    impl<'a, T, I, U> CommandMut<Result<(), InsertionError>> for Insertion<'a, T, I, U>
-    where
-        U: GraphBackend,
-        T: Indexer<I>,
-        I: Iterator<Item = &'a mut U::Vertex>,
-        U::Vertex: 'a,
-    {
-        fn execute<R>(self, graph: &mut R) -> Result<(), InsertionError>
-        where
-            R: GraphBackend,
-        {
-            todo!()
-        }
-    }
-}
+pub(crate) mod cmds {}

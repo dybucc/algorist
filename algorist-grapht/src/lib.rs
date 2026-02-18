@@ -10,18 +10,22 @@ mod private {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+
     use crate::{
-        api::{Command, GraphBackend, Selection, Insertion},
+        api::{GraphBackend, Insertion, Selection},
         backend::Graph,
     };
 
     #[test]
-    fn it_works() -> <Graph as GraphBackend>::Result<()> {
+    fn it_works() -> Result<(), Box<dyn Error>> {
         let mut graph = Graph::new(10)?;
 
-        graph.cmd(Insertion::Arc(graph.iter_mut().select(0..1)));
-        graph.cmd(Insertion::Arc(graph.iter_mut().select(0..=2)));
-        graph.cmd(Insertion::Vertex);
+        let cmd0 = Insertion::Arc(graph.select(0..2));
+        let cmd1 = Insertion::Arc(graph.select(0..=2));
+
+        graph.cmd_mut(cmd0);
+        graph.cmd_mut(cmd0);
 
         // // TODO: implement a macro that lets me access each field more
         // // ergonomically inside of the function.
