@@ -2,17 +2,19 @@ use std::{
     alloc::AllocError,
     fmt::{Display, Formatter},
     marker::PhantomData,
+    ops::RangeBounds,
     rc::Rc,
 };
 
 use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::GraphBackend;
+use crate::api::{GraphBackend, Select};
 
 #[derive(Debug)]
 pub(crate) struct Arc {
     tip: Option<Rc<Vertex>>,
+    id: String,
 }
 
 impl PartialEq for Arc {
@@ -24,12 +26,13 @@ impl PartialEq for Arc {
 #[derive(Debug)]
 pub(crate) struct Vertex {
     arcs: Vec<Rc<Arc>>,
+    id: String,
 }
 
 #[derive(Debug)]
 pub(crate) struct Graph {
     vertices: Vec<Rc<Vertex>>,
-    arcs: Vec<Rc<Arc>>,
+    id: String,
 }
 
 #[derive(Debug, Error)]
@@ -57,14 +60,7 @@ impl Graph {
                     container
                 },
             ),
-            arcs: self.arcs.iter().fold(
-                Vec::try_with_capacity(self.arcs.len()).map_err(|_| CloneShallowError)?,
-                |mut container, ptr| {
-                    container.push(Rc::clone(ptr));
-
-                    container
-                },
-            ),
+            id: String::new(),
         })
     }
 
@@ -108,6 +104,14 @@ impl<'a> Iterator for IterMut<'a> {
                 self.container.get(*idx).map(|ptr| unsafe { &mut **ptr })
             }
         }
+    }
+}
+
+pub(crate) struct Index(pub(crate) usize);
+
+impl From<usize> for Index {
+    fn from(value: usize) -> Self {
+        Self(value)
     }
 }
 
@@ -162,12 +166,10 @@ impl GraphBackend for Graph {
     type Vertex = Vertex;
     type Arc = Arc;
 
-    type CreationResult = Result<Graph, GraphCreationError>;
+    type Indexer = Index;
+    type Error = GraphCreationError;
 
-    fn new<T>(n: T) -> Self::CreationResult
-    where
-        T: AsPrimitive<usize>,
-    {
+    fn new<T: AsPrimitive<usize>>(n: T) -> Result<Graph, Self::Error> {
         let n = n.as_();
 
         Ok(Graph {
@@ -176,7 +178,10 @@ impl GraphBackend for Graph {
                     Vec::try_with_capacity(n + Graph::EXTRA_N)
                         .map_err(|_| GraphCreationError::AllocError(AllocErrorSrc::ArenaAlloc))?,
                     |mut output, _| {
-                        output.push(Rc::try_new(Vertex { arcs: Vec::new() })?);
+                        output.push(Rc::try_new(Vertex {
+                            arcs: Vec::new(),
+                            id: String::new(),
+                        })?);
 
                         Ok::<_, AllocError>(output)
                     },
@@ -187,8 +192,12 @@ impl GraphBackend for Graph {
                         ArenaItemType::Vert,
                     )))
                 })?,
-            arcs: Vec::new(),
+            id: String::new(),
         })
+    }
+
+    fn select<R: RangeBounds<Q>, Q: Into<Self::Indexer>>(&self, range: R) -> Select<Self::Indexer> {
+        todo!()
     }
 }
 

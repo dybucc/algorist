@@ -1,4 +1,9 @@
-#![feature(allocator_api, try_with_capacity)]
+#![feature(
+    allocator_api,
+    try_with_capacity,
+    control_flow_into_value,
+    negative_impls
+)]
 #![expect(dead_code, reason = "The crate is a WIP.")]
 
 pub mod api;
@@ -12,20 +17,11 @@ mod private {
 mod tests {
     use std::error::Error;
 
-    use crate::{
-        api::{GraphBackend, Insertion, Selection},
-        backend::Graph,
-    };
+    use crate::{api::GraphBackend, backend::Graph};
 
     #[test]
     fn it_works() -> Result<(), Box<dyn Error>> {
         let mut graph = Graph::new(10)?;
-
-        let cmd0 = Insertion::Arc(graph.select(0..2));
-        let cmd1 = Insertion::Arc(graph.select(0..=2));
-
-        graph.cmd_mut(cmd0);
-        graph.cmd_mut(cmd0);
 
         // // TODO: implement a macro that lets me access each field more
         // // ergonomically inside of the function.
