@@ -1,8 +1,4 @@
-use std::{
-    error::Error,
-    fmt::Display,
-    ops::{Bound, RangeBounds},
-};
+use std::{borrow::Borrow, error::Error, fmt::Debug};
 
 use num_traits::AsPrimitive;
 
@@ -21,12 +17,9 @@ pub(crate) trait GraphBackend: Sized {
     type Vertex;
     type Arc;
 
-    type Indexer;
-    type Error: Error + Display;
+    type Error: Error + Debug;
 
     fn new<T: AsPrimitive<usize>>(n: T) -> Result<Self, Self::Error>;
-
-    fn select<R: RangeBounds<Q>, Q: Into<Self::Indexer>>(&self, range: R) -> Select<Self::Indexer>;
 
     fn cmd_mut<T: CommandMut<U, Self>, U>(&mut self, cmd: T) -> U {
         cmd.execute(self)
@@ -36,15 +29,28 @@ pub(crate) trait GraphBackend: Sized {
     }
 }
 
+pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
+    fn iter(&'a self) -> impl Iterator<Item: 'a, Item = &'a G::Vertex>;
+    fn iter_mut(&'a mut self) -> impl Iterator<Item: 'a, Item = &'a mut G::Vertex>;
+}
+
+pub(crate) trait IdExt {
+    type Id;
+
+    fn get_id<T: ?Sized>(&self) -> &T
+    where
+        Self::Id: Borrow<T>;
+
+    fn set_id_with<T: Into<Self::Id>>(&mut self, other_fn: impl FnOnce() -> T);
+    fn set_id<T: Into<Self::Id>>(&mut self, other: T) {
+        self.set_id_with(|| other);
+    }
+}
+
 pub(crate) trait Command<T, U: GraphBackend> {
     fn execute(self, graph: &U) -> T;
 }
 
 pub(crate) trait CommandMut<T, U: GraphBackend> {
     fn execute(self, graph: &mut U) -> T;
-}
-
-pub(crate) struct Select<T> {
-    src: Bound<T>,
-    dst: Bound<T>,
 }

@@ -1,16 +1,4 @@
-use crate::api::GraphBackend;
-use thiserror::Error;
-
 pub(crate) mod basic {
-    #![expect(
-        clippy::wildcard_imports,
-        reason = "This module is purposefully structured this way. There's some imports that all \
-                 submodules need. The lint expectation is unfulfilled, but without it clippy still \
-                 complains."
-    )]
-
-    use super::*;
-
     pub(crate) mod board {
         use std::{
             cmp::Ordering,
@@ -20,11 +8,16 @@ pub(crate) mod basic {
             ops::ControlFlow,
         };
 
-        use super::*;
+        use thiserror::Error;
 
-        #[derive(Error, Debug)]
+        use crate::api::GraphBackend;
+        use crate::{
+            api::{IdExt, VertexIterExt},
+            backend::Graph,
+        };
+
+        #[derive(Debug)]
         pub(crate) enum NormalizationError {
-            #[error("allocation of component size vector failed")]
             AllocFailed,
         }
 
@@ -47,8 +40,8 @@ pub(crate) mod basic {
 
                 return Ok((output, 2));
             }
-
             let prior_components = [*n1, *n2, *n3];
+
             Ok([*n2, *n3, *n4]
                 .iter()
                 .enumerate()
@@ -89,25 +82,38 @@ pub(crate) mod basic {
                 .into_value())
         }
 
-        #[derive(Debug, Error)]
+        #[derive(Debug)]
         pub(crate) enum BuildGraphError<G: GraphBackend> {
-            #[error("value range for component is disproportionately large")]
             ComponentSizesOutOfBounds,
-            #[error("failed to create graph")]
             GraphCreationFailed(G::Error),
+            AuxiliaryAllocFailed(Context),
         }
 
-        pub(crate) fn build_graph<G: GraphBackend>(
-            dims: usize,
+        impl<G: GraphBackend> From<TryReserveError> for BuildGraphError<G> {
+            fn from(value: TryReserveError) -> Self {
+                Self::AuxiliaryAllocFailed(Context)
+            }
+        }
+
+        pub(crate) fn build_graph<
+            S,
+            G: GraphBackend<Vertex: IdExt<Id = S>> + for<'a> VertexIterExt<'a, G> + IdExt<Id = S>,
+        >(
             nn: &[isize],
-        ) -> Result<G, BuildGraphError<G>> {
+        ) -> Result<G, BuildGraphError<G>>
+        where
+            for<'a> &'a str: Into<S>,
+        {
             let n = nn
                 .iter()
                 .try_fold(1_isize, |accum, &component| accum.checked_mul(component))
                 .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?;
-            let graph = G::new(n).map_err(|e| BuildGraphError::GraphCreationFailed(e))?;
+            let mut graph = G::new(n).map_err(|e| BuildGraphError::GraphCreationFailed(e))?;
+            let mut name_state = Vec::try_with_capacity(nn.len())?;
+            (0..nn.len()).map(|_| 0_usize).collect_into(&mut name_state);
+            for vertex in graph.iter_mut() {}
 
-            todo!()
+            Ok(graph)
         }
 
         pub(crate) fn fill_arcs() {}
@@ -129,12 +135,18 @@ pub(crate) mod basic {
             }
         }
 
+        pub(crate) enum Context {
+            NameAllocation,
+        }
+
         #[derive(Debug, Error)]
         pub(crate) enum BoardError<G: GraphBackend> {
             #[error("allocation of component size vector failed")]
             NormalizationFailed,
             #[error("failed to build graph: {0}")]
             GraphBuildFailed(GraphBuildErrorSrc<G>),
+            #[error("failed to allocate auxiliary memory during {0}")]
+            AuxiliaryAllocFailed(Context),
         }
 
         impl<G: GraphBackend> From<NormalizationError> for BoardError<G> {
@@ -154,11 +166,18 @@ pub(crate) mod basic {
                     BuildGraphError::GraphCreationFailed(e) => {
                         Self::GraphBuildFailed(GraphBuildErrorSrc::GraphCreationFailed(e))
                     }
+                    BuildGraphError::AuxiliaryAllocFailed => Self::AuxiliaryAllocFailed,
                 }
             }
         }
 
-        pub(crate) trait Board: GraphBackend {
+        pub(crate) trait Board<S = String>:
+            GraphBackend<Vertex: IdExt<Id = S>>
+            + for<'a> VertexIterExt<'a, Self>
+            + IdExt<Id = S>
+        where
+            for<'a> &'a str: Into<S>,
+        {
             fn board(
                 mut n1: isize,
                 mut n2: isize,
@@ -169,7 +188,7 @@ pub(crate) mod basic {
                 directed: isize,
             ) -> Result<Self, BoardError<Self>> {
                 let (nn, d) = normalize_board_size(&mut n1, &mut n2, &mut n3, &mut n4)?;
-                let graph: Self = build_graph(d, &nn)?;
+                let graph: Self = build_graph(&nn)?;
                 fill_arcs();
 
                 Ok(graph)
@@ -182,9 +201,7 @@ pub(crate) mod basic {
             fn cycle() {}
         }
 
-        // TODO: expose a type that takes a generic parameter that implements
-        // `GraphBackend` and makes more ergonomic calling into the trait's
-        // methods.
+        impl Board for Graph {}
     }
 
     fn simplex() {}

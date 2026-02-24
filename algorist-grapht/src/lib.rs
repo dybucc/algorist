@@ -2,7 +2,7 @@
     allocator_api,
     try_with_capacity,
     control_flow_into_value,
-    negative_impls
+    iter_collect_into
 )]
 #![expect(dead_code, reason = "The crate is a WIP.")]
 
@@ -22,6 +22,7 @@ mod tests {
     #[test]
     fn it_works() -> Result<(), Box<dyn Error>> {
         let mut graph = Graph::new(10)?;
+        let iter = graph.iter_mut();
 
         // // TODO: implement a macro that lets me access each field more
         // // ergonomically inside of the function.

@@ -1,15 +1,15 @@
 use std::{
     alloc::AllocError,
+    borrow::Borrow,
     fmt::{Display, Formatter},
     marker::PhantomData,
-    ops::RangeBounds,
     rc::Rc,
 };
 
 use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::{GraphBackend, Select};
+use crate::api::{GraphBackend, IdExt, VertexIterExt};
 
 #[derive(Debug)]
 pub(crate) struct Arc {
@@ -29,6 +29,21 @@ pub(crate) struct Vertex {
     id: String,
 }
 
+impl IdExt for Vertex {
+    type Id = String;
+
+    fn get_id<T: ?Sized>(&self) -> &T
+    where
+        Self::Id: Borrow<T>,
+    {
+        self.id.borrow()
+    }
+
+    fn set_id_with<T: Into<Self::Id>>(&mut self, other_fn: impl FnOnce() -> T) {
+        self.id = other_fn().into();
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Graph {
     vertices: Vec<Rc<Vertex>>,
@@ -40,7 +55,7 @@ pub(crate) struct Graph {
 pub(crate) struct CloneShallowError;
 
 #[derive(Debug, Error)]
-pub(crate) enum IterMutError {
+pub(crate) enum TryIterMutError {
     #[error("failed to allocate auxiliary memory")]
     AllocFailed,
     #[error("vertex with index {0} is not uniquely owned")]
@@ -64,15 +79,34 @@ impl Graph {
         })
     }
 
-    pub(crate) fn try_iter_mut(&mut self) -> Result<IterMut<'_>, IterMutError> {
+    pub(crate) fn iter(&self) -> Iter<'_> {
+        Iter {
+            first: self.vertices.first().map(|ptr| &raw const *ptr),
+            len: self.vertices.len(),
+            idx: None,
+            _marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> IterMut<'_> {
+        IterMut {
+            first: self.vertices.first_mut().map(|ptr| &raw mut *ptr),
+            len: self.vertices.len(),
+            idx: None,
+            _marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn try_iter_mut(&mut self) -> Result<TryIterMut<'_>, TryIterMutError> {
         let len = self.vertices.len();
 
-        Ok(IterMut {
+        Ok(TryIterMut {
             container: self.vertices.iter_mut().enumerate().try_fold(
-                Vec::try_with_capacity(len).map_err(|_| IterMutError::AllocFailed)?,
+                Vec::try_with_capacity(len).map_err(|_| TryIterMutError::AllocFailed)?,
                 |mut container, (idx, ptr)| {
                     container.push(
-                        &raw mut *Rc::get_mut(ptr).ok_or(IterMutError::NonUniqueOwnersip(idx))?,
+                        &raw mut *Rc::get_mut(ptr)
+                            .ok_or(TryIterMutError::NonUniqueOwnersip(idx))?,
                     );
 
                     Ok(container)
@@ -84,8 +118,18 @@ impl Graph {
     }
 }
 
+impl<'a> IntoIterator for &'a mut Graph {
+    type Item = <IterMut<'a> as Iterator>::Item;
+    type IntoIter = IterMut<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
 pub(crate) struct IterMut<'a> {
-    container: Vec<*mut Vertex>,
+    first: Option<*mut Rc<Vertex>>,
+    len: usize,
     idx: Option<usize>,
     _marker: PhantomData<&'a mut Vertex>,
 }
@@ -96,22 +140,81 @@ impl<'a> Iterator for IterMut<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.idx {
             None => {
+                if self.len == 0 {
+                    return None;
+                }
                 self.idx = Some(0);
+            }
+            Some(ref mut idx) => {
+                if *idx == self.len - 1 {
+                    return None;
+                }
+                *idx += 1;
+                self.first = self.first.map(|ptr| unsafe { ptr.add(1) });
+            }
+        }
+
+        self.first
+            .as_ref()
+            .map(|ptr| unsafe { &mut *Rc::as_ptr(&**ptr).cast_mut() })
+    }
+}
+
+pub(crate) struct Iter<'a> {
+    first: Option<*const Rc<Vertex>>,
+    len: usize,
+    idx: Option<usize>,
+    _marker: PhantomData<&'a Vertex>,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a Vertex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.idx {
+            None => {
+                if self.len > 0 {
+                    return None;
+                }
+                self.idx = Some(0);
+            }
+            Some(ref mut idx) => {
+                if *idx == self.len - 1 {
+                    return None;
+                }
+                *idx += 1;
+                self.first = self.first.map(|ptr| unsafe { ptr.add(1) });
+            }
+        }
+
+        self.first
+            .as_ref()
+            .map(|ptr| unsafe { &*Rc::as_ptr(&**ptr) })
+    }
+}
+
+pub(crate) struct TryIterMut<'a> {
+    container: Vec<*mut Vertex>,
+    idx: Option<usize>,
+    _marker: PhantomData<&'a mut Vertex>,
+}
+
+impl<'a> Iterator for TryIterMut<'a> {
+    type Item = &'a mut Vertex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.idx {
+            None => {
+                self.idx = Some(0);
+
                 self.container.first().map(|ptr| unsafe { &mut **ptr })
             }
             Some(ref mut idx) => {
                 *idx += 1;
+
                 self.container.get(*idx).map(|ptr| unsafe { &mut **ptr })
             }
         }
-    }
-}
-
-pub(crate) struct Index(pub(crate) usize);
-
-impl From<usize> for Index {
-    fn from(value: usize) -> Self {
-        Self(value)
     }
 }
 
@@ -166,7 +269,6 @@ impl GraphBackend for Graph {
     type Vertex = Vertex;
     type Arc = Arc;
 
-    type Indexer = Index;
     type Error = GraphCreationError;
 
     fn new<T: AsPrimitive<usize>>(n: T) -> Result<Graph, Self::Error> {
@@ -195,9 +297,35 @@ impl GraphBackend for Graph {
             id: String::new(),
         })
     }
+}
 
-    fn select<R: RangeBounds<Q>, Q: Into<Self::Indexer>>(&self, range: R) -> Select<Self::Indexer> {
-        todo!()
+impl IdExt for Graph {
+    type Id = String;
+
+    fn get_id<T: ?Sized>(&self) -> &T
+    where
+        Self::Id: Borrow<T>,
+    {
+        self.id.borrow()
+    }
+
+    fn set_id_with<T: Into<Self::Id>>(&mut self, other_fn: impl FnOnce() -> T) {
+        self.id = other_fn().into();
+    }
+}
+
+#[expect(
+    refining_impl_trait,
+    reason = "Not only is this part of the public API, it's also a compile-time error because the \
+             trait declaration uses a return value that includes the `?Sized` bound."
+)]
+impl<'a> VertexIterExt<'a, Self> for Graph {
+    fn iter(&'a self) -> Iter<'a> {
+        self.iter()
+    }
+
+    fn iter_mut(&'a mut self) -> IterMut<'a> {
+        self.iter_mut()
     }
 }
 
