@@ -3,13 +3,17 @@ use std::{
     borrow::Borrow,
     fmt::{Display, Formatter},
     marker::PhantomData,
+    num::NonZeroIsize,
     rc::Rc,
 };
 
 use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::{GraphBackend, IdExt, VertexIterExt};
+use crate::api::{
+    GraphBackend, IdExt, VertexIterExt,
+    routines::basic::board::{Board, BoardError},
+};
 
 #[derive(Debug)]
 pub(crate) struct Arc {
@@ -64,6 +68,22 @@ pub(crate) enum TryIterMutError {
 
 impl Graph {
     const EXTRA_N: usize = 4;
+
+    pub fn new(n: usize) -> Result<Self, GraphCreationError> {
+        <Self as GraphBackend>::new(n)
+    }
+
+    pub fn board(
+        mut n1: isize,
+        mut n2: isize,
+        mut n3: isize,
+        mut n4: isize,
+        piece: NonZeroIsize,
+        wrap: isize,
+        directed: isize,
+    ) -> Result<Self, BoardError<Self>> {
+        <Self as Board>::board(n1, n2, n3, n4, piece, wrap, directed)
+    }
 
     pub(crate) fn clone_shallow(&self) -> Result<Graph, CloneShallowError> {
         Ok(Self {

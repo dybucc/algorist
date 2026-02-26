@@ -2,6 +2,8 @@ use std::{borrow::Borrow, error::Error, fmt::Debug};
 
 use num_traits::AsPrimitive;
 
+use crate::private::Sealed;
+
 pub(crate) mod routines;
 
 // TODO: consider further separating the API for graph backend implementors into
@@ -17,7 +19,7 @@ pub(crate) trait GraphBackend: Sized {
     type Vertex;
     type Arc;
 
-    type Error: Error + Debug;
+    type Error: Error;
 
     fn new<T: AsPrimitive<usize>>(n: T) -> Result<Self, Self::Error>;
 
@@ -43,9 +45,18 @@ pub(crate) trait IdExt {
 
     fn set_id_with<T: Into<Self::Id>>(&mut self, other_fn: impl FnOnce() -> T);
     fn set_id<T: Into<Self::Id>>(&mut self, other: T) {
-        self.set_id_with(|| other);
+        self.set_id_with(|| other.into());
     }
 }
+
+pub(crate) trait Field<T, const N: usize> {
+    fn get_field<Q>(&self) -> &Q
+    where
+        T: Borrow<Q>;
+    fn set_field<Q: Into<T>>(&mut self, other: Q);
+}
+
+pub(crate) trait FieldsExt<T, const N: usize>: Sealed {}
 
 pub(crate) trait Command<T, U: GraphBackend> {
     fn execute(self, graph: &U) -> T;

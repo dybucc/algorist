@@ -15,28 +15,14 @@ mod private {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error;
+    use std::{error::Error, num::NonZeroIsize};
 
-    use crate::{api::GraphBackend, backend::Graph};
+    use crate::backend::Graph;
 
     #[test]
     fn it_works() -> Result<(), Box<dyn Error>> {
         let mut graph = Graph::new(10)?;
-        let iter = graph.iter_mut();
-
-        // // TODO: implement a macro that lets me access each field more
-        // // ergonomically inside of the function.
-        // #[cfg_attr(not(doc), add)]
-        // fn planar_graph<T>(g: &T)
-        // where
-        //     T: GraphBackend + Fields<String, 2>,
-        //     T::Vertex: Fields<u32, 1>,
-        // {
-        //     <T as Field<String, 0>>::get(g);
-        //     <T::Vertex as Field<u32, 0>>::get(
-        //         <T as GraphBackend>::get(g, <T as GraphBackend>::Indexer { field: 0 }).unwrap(),
-        //     );
-        // }
+        let _ = Graph::board(1, 1, 1, 1, unsafe { NonZeroIsize::new_unchecked(1) }, 1, 1);
 
         Ok(())
     }
