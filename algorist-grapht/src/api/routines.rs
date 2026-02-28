@@ -2,8 +2,9 @@ pub(crate) mod basic {
     pub(crate) mod board {
         use std::{
             cmp::Ordering,
+            collections::TryReserveError,
             error::Error,
-            fmt::{Debug, Display, Formatter, Write},
+            fmt::{Debug, Display, Formatter, Write as _},
             num::NonZeroIsize,
             ops::ControlFlow,
         };
@@ -11,11 +12,7 @@ pub(crate) mod basic {
         use algorist_grapht_macros::replace_fields;
         use thiserror::Error;
 
-        use crate::api::{FieldsExt, GraphBackend};
-        use crate::{
-            api::{IdExt, VertexIterExt},
-            backend::Graph,
-        };
+        use crate::api::{FieldsExt, GraphBackend, IdExt, VertexIterExt};
 
         #[derive(Debug, Error)]
         pub(crate) enum NormalizationError {
@@ -23,98 +20,82 @@ pub(crate) mod basic {
             ComponentRangesAllocFailed,
         }
 
+        impl From<TryReserveError> for NormalizationError {
+            fn from(_: TryReserveError) -> Self {
+                Self::ComponentRangesAllocFailed
+            }
+        }
+
         pub(crate) fn normalize_board_size(
             n1: &mut isize,
             n2: &mut isize,
             n3: &mut isize,
             n4: &mut isize,
-        ) -> Result<(Vec<isize>, usize), NormalizationError> {
-            if *n1 <= 0 {
-                let mut output = Vec::try_with_capacity(2)
-                    .map_err(|_| NormalizationError::ComponentRangesAllocFailed)?;
-                output.push(8);
-                output.push(8);
-                return Ok((output, 2));
-            }
-            let prior_components = [*n1, *n2, *n3];
-            let (component_ranges, dims) = {
-                let (component_ranges, dims) = [*n2, *n3, *n4]
-                    .iter()
-                    .enumerate()
-                    .map(|(component_num, component)| (component_num + 1, component))
-                    .try_fold(
-                        {
-                            let mut output = Vec::try_with_capacity(4)
-                                .map_err(|_| NormalizationError::ComponentRangesAllocFailed)?;
-                            output.push(*n1);
+        ) -> Result<Vec<usize>, NormalizationError> {
+            Ok([*n1, *n2, *n3, *n4]
+                .iter()
+                .enumerate()
+                .try_fold(
+                    Vec::try_with_capacity(4)?,
+                    |mut components, (component_num, &component)| match component.cmp(&0) {
+                        Ordering::Less | Ordering::Equal if component_num == 0 => {
+                            ControlFlow::Break(Ok((0..2).fold(components, |mut output, _| {
+                                output.push(8);
 
-                            output
-                        },
-                        |mut total_components, (component_num, &component)| match component.cmp(&0)
-                        {
-                            Ordering::Less => ControlFlow::Break((
-                                {
-                                    let len = component.unsigned_abs();
-                                    total_components.clear();
-                                    if total_components.try_reserve_exact(len).is_ok() {
-                                        prior_components
-                                            .iter()
-                                            .take(component_num)
-                                            .cycle()
-                                            .take(len)
-                                            .copied()
-                                            .collect_into(&mut total_components);
+                                output
+                            })))
+                        }
+                        Ordering::Less => ControlFlow::Break({
+                            components.clear();
 
-                                        Ok(total_components)
-                                    } else {
-                                        Err(total_components)
-                                    }
-                                },
-                                component.unsigned_abs(),
-                            )),
-                            Ordering::Equal => ControlFlow::Break((
-                                {
-                                    total_components.clear();
-                                    prior_components
-                                        .iter()
+                            components
+                                .try_reserve_exact(component.unsigned_abs())
+                                .map(|_| {
+                                    [*n1, *n2, *n3]
+                                        .into_iter()
                                         .take(component_num)
-                                        .copied()
-                                        .collect_into(&mut total_components);
+                                        .cycle()
+                                        .take(component.unsigned_abs())
+                                        .map(isize::cast_unsigned)
+                                        .collect_into(&mut components);
 
-                                    Ok(total_components)
-                                },
-                                component_num,
-                            )),
-                            Ordering::Greater => {
-                                total_components.push(component);
-                                ControlFlow::Continue(total_components)
-                            }
-                        },
-                    )
-                    .map_continue(|result| (Ok(result), 4))
-                    .into_value();
-                (
-                    component_ranges.map_err(|_| NormalizationError::ComponentRangesAllocFailed)?,
-                    dims,
+                                    components
+                                })
+                        }),
+                        Ordering::Equal => ControlFlow::Break(Ok(components)),
+                        Ordering::Greater => {
+                            components.push(component.cast_unsigned());
+
+                            ControlFlow::Continue(components)
+                        }
+                    },
                 )
-            };
-
-            Ok((component_ranges, dims))
+                .map_continue(Ok)
+                .into_value()?)
         }
 
         #[derive(Debug, Error)]
         pub(crate) enum BuildGraphError<G: GraphBackend> {
-            #[error("")]
+            #[error("input component sizes produce a larger-than-signed machine word vertex count")]
             ComponentSizesOutOfBounds,
-            #[error("")]
+            /// Doesn't implement `From<G::Error>` because at this point
+            /// `G::Error` could be anything, including `BuildGraphError`
+            /// itself, for which there's already a blanket implementation in
+            /// `std`.
+            #[error(transparent)]
             GraphCreationFailed(G::Error),
-            #[error("")]
+            #[error("auxiliary heap allocation failed")]
             AuxiliaryAllocFailed,
-            #[error("")]
+            #[error("writing onto the name stream for vertex ids failed")]
             FaultyStreamWrite,
         }
 
-        #[cfg_attr(not(doc), replace_fields)]
+        impl<G: GraphBackend> From<TryReserveError> for BuildGraphError<G> {
+            fn from(_: TryReserveError) -> Self {
+                Self::AuxiliaryAllocFailed
+            }
+        }
+
         pub(crate) fn build_graph<
             S,
             G: GraphBackend<Vertex: IdExt<Id = S>>
@@ -122,52 +103,71 @@ pub(crate) mod basic {
                 + IdExt<Id = S>
                 + FieldsExt<usize, 3>,
         >(
-            nn: &[isize],
+            nn: &[usize],
         ) -> Result<G, BuildGraphError<G>>
         where
             for<'a> &'a str: Into<S>,
         {
-            let n = nn
-                .iter()
-                .try_fold(1_isize, |sum, &component| sum.checked_mul(component))
-                .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?;
+            let (n, mut name_state) = (
+                nn.iter()
+                    .try_fold(1_usize, |sum, &component| sum.checked_mul(component))
+                    .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
+                (0..nn.len()).fold(Vec::try_with_capacity(nn.len())?, |mut output, _| {
+                    output.push(0);
+
+                    output
+                }),
+            );
             let mut graph = G::new(n).map_err(|e| BuildGraphError::GraphCreationFailed(e))?;
-            let mut name_state = {
-                let mut output = Vec::try_with_capacity(nn.len())
-                    .map_err(|_| BuildGraphError::AuxiliaryAllocFailed)?;
-                (0..nn.len()).map(|_| 0_isize).collect_into(&mut output);
+            graph.iter_mut().try_fold(
+                // Must account for both the number of digits of the last
+                // vertex's coordinate, as well as the separation dots.
+                String::try_with_capacity(
+                    nn.iter()
+                        .map(|&component_range| {
+                            if component_range == 0 {
+                                return 0_usize;
+                            }
 
-                output
-            };
-            let mut name = String::try_with_capacity(name_state.len())
-                .map_err(|_| BuildGraphError::AuxiliaryAllocFailed)?;
-            for vertex in graph.iter_mut() {
-                vertex.set_id({
-                    name = {
-                        let mut output =
-                            name_state.iter().try_fold(name, |mut name, component| {
-                                write!(&mut name, "{component}.")
-                                    .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
+                            component_range.ilog10() as usize
+                        })
+                        .sum::<usize>()
+                        + nn.len(),
+                )?,
+                |mut name, vertex| {
+                    vertex.set_id({
+                        name = {
+                            let mut output =
+                                name_state.iter().try_fold(name, |mut name, component| {
+                                    write!(&mut name, "{component}.")
+                                        .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
 
-                                Ok(name)
-                            })?;
-                        output.pop(); // Get rid of the last `.`.
+                                    Ok::<_, BuildGraphError<_>>(name)
+                                })?;
+                            output.pop(); // Get rid of the last `.`.
 
-                        output
-                    };
+                            output
+                        };
 
-                    name.as_str()
-                });
-                name.clear();
-                for (component_num, component) in name_state.iter_mut().enumerate().rev() {
-                    if *component + 1 == nn[component_num] {
-                        *component = 0;
-                        continue;
-                    }
-                    *component += 1;
-                    break;
-                }
-            }
+                        name.as_str()
+                    });
+                    name.clear();
+                    let _ = name_state.iter_mut().enumerate().rev().try_fold(
+                        (),
+                        |(), (component_num, component)| {
+                            if *component + 1 == nn[component_num] {
+                                ControlFlow::Continue(())
+                            } else {
+                                *component += 1;
+
+                                ControlFlow::Break(())
+                            }
+                        },
+                    );
+
+                    Ok::<_, BuildGraphError<G>>(name)
+                },
+            );
 
             Ok(graph)
         }
@@ -198,11 +198,11 @@ pub(crate) mod basic {
             #[error("failed to build graph: {0}")]
             GraphBuild(GraphBuildErrorSrc<G>),
             /// If you hit this error, some implementation detail hidden from
-            /// the reach of library users has taken place.
+            /// the reach of library users has failed.
             ///
             /// The error is fairly opaque and thus not meant to communicate
-            /// anything but the fact that an unrecoverable error took place
-            /// somewhere in the implementation.
+            /// anything but the fact that an unrecoverable error took place,
+            /// and its meaning is not exposed in the public API.
             #[error(transparent)]
             Other(#[from] Box<dyn Error>),
         }
@@ -236,7 +236,7 @@ pub(crate) mod basic {
             }
         }
 
-        #[cfg_attr(not(doc), replace_fields)]
+        // #[cfg_attr(not(doc), replace_fields)]
         pub(crate) trait Board:
             GraphBackend<Vertex: IdExt<Id = <Self as Board>::Id>>
             + for<'a> VertexIterExt<'a, Self>
@@ -258,7 +258,7 @@ pub(crate) mod basic {
                 wrap: isize,
                 directed: isize,
             ) -> Result<Self, BoardError<Self>> {
-                let (nn, d) = normalize_board_size(&mut n1, &mut n2, &mut n3, &mut n4)?;
+                let nn = normalize_board_size(&mut n1, &mut n2, &mut n3, &mut n4)?;
                 let graph: Self = build_graph(&nn)?;
                 fill_arcs();
 
@@ -270,10 +270,6 @@ pub(crate) mod basic {
             fn empty() {}
             fn circuit() {}
             fn cycle() {}
-        }
-
-        impl Board for Graph {
-            type Id = String;
         }
     }
 

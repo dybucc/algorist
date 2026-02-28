@@ -74,10 +74,10 @@ impl Graph {
     }
 
     pub fn board(
-        mut n1: isize,
-        mut n2: isize,
-        mut n3: isize,
-        mut n4: isize,
+        n1: isize,
+        n2: isize,
+        n3: isize,
+        n4: isize,
         piece: NonZeroIsize,
         wrap: isize,
         directed: isize,
@@ -340,13 +340,20 @@ impl IdExt for Graph {
              trait declaration uses a return value that includes the `?Sized` bound."
 )]
 impl<'a> VertexIterExt<'a, Self> for Graph {
-    fn iter(&'a self) -> Iter<'a> {
+    type SharedIter = Iter<'a>;
+    type ExclusiveIter = IterMut<'a>;
+
+    fn iter(&'a self) -> Self::SharedIter {
         self.iter()
     }
 
-    fn iter_mut(&'a mut self) -> IterMut<'a> {
+    fn iter_mut(&'a mut self) -> Self::ExclusiveIter {
         self.iter_mut()
     }
+}
+
+impl Board for Graph {
+    type Id = String;
 }
 
 pub(crate) mod cmds {}

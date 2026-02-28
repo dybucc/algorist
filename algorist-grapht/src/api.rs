@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, error::Error, fmt::Debug};
+use std::{borrow::Borrow, error::Error};
 
 use num_traits::AsPrimitive;
 
@@ -32,8 +32,11 @@ pub(crate) trait GraphBackend: Sized {
 }
 
 pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
-    fn iter(&'a self) -> impl Iterator<Item: 'a, Item = &'a G::Vertex>;
-    fn iter_mut(&'a mut self) -> impl Iterator<Item: 'a, Item = &'a mut G::Vertex>;
+    type SharedIter: Iterator<Item: 'a, Item = &'a G::Vertex>;
+    type ExclusiveIter: Iterator<Item: 'a, Item = &'a mut G::Vertex>;
+
+    fn iter(&'a self) -> Self::SharedIter;
+    fn iter_mut(&'a mut self) -> Self::ExclusiveIter;
 }
 
 pub(crate) trait IdExt {

@@ -3,8 +3,8 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
     ExprCall, ExprField, ExprStruct, Field, GenericParam, Generics, Ident, ImplItem, ImplItemFn,
-    Index, ItemImpl, Path, Result as SynResult, Token, Type, TypeTuple, Visibility, WhereClause,
-    WherePredicate, braced,
+    Index, ItemFn, ItemImpl, ItemTrait, Path, Result as SynResult, Token, Type, TypeTuple,
+    Visibility, WhereClause, WherePredicate, braced,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
@@ -236,11 +236,56 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
     TokenStream::from(quote! { #impl_block })
 }
 
+enum FieldExtRequirer {
+    Trait(ItemTrait),
+    FreeFn(ItemFn),
+}
+
+impl FieldExtRequirer {
+    fn tokenize(self) -> TokenStream2 {
+        match self {
+            Self::Trait(mut trait_variant) => {
+                let supertraits = &mut trait_variant.supertraits;
+                let mut fields_params = None;
+                if supertraits.iter().any(|trait_bound| match trait_bound {
+                    syn::TypeParamBound::Trait(trait_bound) => {
+                        let path = &trait_bound.path.segments.last().unwrap();
+
+                        if path.ident == "FieldsExt" {
+                            fields_params = Some(&path.arguments);
+
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => false,
+                }) {
+                    let fields_params = fields_params.unwrap();
+                }
+
+                quote! { #trait_variant }
+            }
+            Self::FreeFn(fn_variant) => quote! {},
+        }
+    }
+}
+
+impl Parse for FieldExtRequirer {
+    fn parse(input: ParseStream) -> SynResult<Self> {
+        match (input.fork().parse::<ItemTrait>(), input.parse::<ItemFn>()) {
+            (Ok(trait_variant), _) => Ok(Self::Trait(trait_variant)),
+            (_, Ok(fn_variant)) => Ok(Self::FreeFn(fn_variant)),
+            _ => {
+                Err(input.error("this attribute currently only supports traits and free functions"))
+            }
+        }
+    }
+}
+
 #[proc_macro_attribute]
 pub fn replace_fields(_: TokenStream, input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as );
-
-    TokenStream::new()
+    TokenStream::from(parse_macro_input!(input as FieldExtRequirer).tokenize())
 }
 
 #[cfg(test)]
