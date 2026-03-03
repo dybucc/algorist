@@ -2,8 +2,6 @@ use std::{borrow::Borrow, error::Error};
 
 use num_traits::AsPrimitive;
 
-use crate::private::Sealed;
-
 pub(crate) mod routines;
 
 // TODO: consider further separating the API for graph backend implementors into
@@ -32,8 +30,8 @@ pub(crate) trait GraphBackend: Sized {
 }
 
 pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
-    type SharedIter: Iterator<Item: 'a, Item = &'a G::Vertex>;
-    type ExclusiveIter: Iterator<Item: 'a, Item = &'a mut G::Vertex>;
+    type SharedIter: Iterator<Item: 'a, Item = &'a G::Vertex> + 'a;
+    type ExclusiveIter: Iterator<Item: 'a, Item = &'a mut G::Vertex> + 'a;
 
     fn iter(&'a self) -> Self::SharedIter;
     fn iter_mut(&'a mut self) -> Self::ExclusiveIter;
@@ -56,10 +54,18 @@ pub(crate) trait Field<T, const N: usize> {
     fn get_field<Q>(&self) -> &Q
     where
         T: Borrow<Q>;
+
     fn set_field<Q: Into<T>>(&mut self, other: Q);
 }
 
-pub(crate) trait FieldsExt<T, const N: usize>: Sealed {}
+pub(crate) trait FieldsExt<T, const N: usize> {
+    fn get_field<Q>(&mut self) -> [Q; N]
+    where
+        T: Borrow<Q> + Default,
+        for<'a> Q: 'a;
+
+    fn set_field<Q: Into<T>>(&mut self, other: Q);
+}
 
 pub(crate) trait Command<T, U: GraphBackend> {
     fn execute(self, graph: &U) -> T;

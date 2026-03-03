@@ -1,6 +1,8 @@
 use std::{
     alloc::AllocError,
+    any::{Any, TypeId},
     borrow::Borrow,
+    collections::hash_map::Entry,
     fmt::{Display, Formatter},
     marker::PhantomData,
     num::NonZeroIsize,
@@ -10,9 +12,12 @@ use std::{
 use num_traits::cast::AsPrimitive;
 use thiserror::Error;
 
-use crate::api::{
-    GraphBackend, IdExt, VertexIterExt,
-    routines::basic::board::{Board, BoardError},
+use crate::{
+    api::{
+        Field, FieldsExt, GraphBackend, IdExt, VertexIterExt,
+        routines::basic::board::{Board, BoardError},
+    },
+    fields::FieldBuilder,
 };
 
 #[derive(Debug)]
@@ -30,6 +35,7 @@ impl PartialEq for Arc {
 #[derive(Debug)]
 pub(crate) struct Vertex {
     arcs: Vec<Rc<Arc>>,
+    fields: FieldBuilder,
     id: String,
 }
 
@@ -334,11 +340,6 @@ impl IdExt for Graph {
     }
 }
 
-#[expect(
-    refining_impl_trait,
-    reason = "Not only is this part of the public API, it's also a compile-time error because the \
-             trait declaration uses a return value that includes the `?Sized` bound."
-)]
 impl<'a> VertexIterExt<'a, Self> for Graph {
     type SharedIter = Iter<'a>;
     type ExclusiveIter = IterMut<'a>;
@@ -350,6 +351,89 @@ impl<'a> VertexIterExt<'a, Self> for Graph {
     fn iter_mut(&'a mut self) -> Self::ExclusiveIter {
         self.iter_mut()
     }
+}
+
+impl Field<usize, 0> for Vertex {
+    fn get_field<Q>(&self) -> &Q
+    where
+        usize: Borrow<Q>,
+    {
+        todo!()
+    }
+
+    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
+        todo!()
+    }
+}
+
+impl Field<usize, 1> for Vertex {
+    fn get_field<Q>(&self) -> &Q
+    where
+        usize: Borrow<Q>,
+    {
+        todo!()
+    }
+
+    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
+        todo!()
+    }
+}
+
+impl Field<usize, 2> for Vertex {
+    fn get_field<Q>(&self) -> &Q
+    where
+        usize: Borrow<Q>,
+    {
+        todo!()
+    }
+
+    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
+        todo!()
+    }
+}
+
+impl<T: Default, const N: usize> FieldsExt<T, N> for Vertex
+where
+    for<'a> T: 'a,
+{
+    fn get_field<Q>(&mut self) -> [Q; N]
+    where
+        T: Borrow<Q>,
+        for<'a> Q: 'a,
+    {
+        match self.fields.0.entry(TypeId::of::<Q>()) {
+            Entry::Occupied(entry) => {
+                let entry = entry.get_mut();
+                if entry.len() < N {
+                    entry.try_reserve_exact(N);
+                }
+            }
+        }
+
+        self.fields
+            .0
+            .entry(TypeId::of::<Q>())
+            .and_modify(|ty_vec| {
+                if ty_vec.len() < N {
+                    (0..N).for_each(|_| {
+                        ty_vec.push({
+                            let input: Box<dyn Any> = Box::new(T::default());
+
+                            input
+                        })
+                    });
+                }
+            })
+            .or_insert_with(|| {
+                let ty_vec = Vec::trywith();
+
+                ty_vec
+            });
+
+        todo!()
+    }
+
+    fn set_field<Q: Into<T>>(&mut self, other: Q) {}
 }
 
 impl Board for Graph {

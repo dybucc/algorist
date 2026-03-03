@@ -12,7 +12,9 @@ pub(crate) mod basic {
         use algorist_grapht_macros::replace_fields;
         use thiserror::Error;
 
-        use crate::api::{FieldsExt, GraphBackend, IdExt, VertexIterExt};
+        #[cfg(doc)]
+        use crate::api::FieldsExt;
+        use crate::api::{Field, GraphBackend, IdExt, VertexIterExt};
 
         #[derive(Debug, Error)]
         pub(crate) enum NormalizationError {
@@ -50,7 +52,7 @@ pub(crate) mod basic {
 
                             components
                                 .try_reserve_exact(component.unsigned_abs())
-                                .map(|_| {
+                                .map(|()| {
                                     [*n1, *n2, *n3]
                                         .into_iter()
                                         .take(component_num)
@@ -96,38 +98,39 @@ pub(crate) mod basic {
             }
         }
 
+        #[cfg_attr(not(doc), replace_fields)]
         pub(crate) fn build_graph<
             S,
-            G: GraphBackend<Vertex: IdExt<Id = S>>
-                + for<'a> VertexIterExt<'a, G>
-                + IdExt<Id = S>
-                + FieldsExt<usize, 3>,
+            G: GraphBackend<Vertex: IdExt<Id = S>> + for<'a> VertexIterExt<'a, G> + IdExt<Id = S>,
         >(
             nn: &[usize],
         ) -> Result<G, BuildGraphError<G>>
         where
             for<'a> &'a str: Into<S>,
+            <G as GraphBackend>::Vertex: FieldsExt<usize, 3>,
         {
-            let (n, mut name_state) = (
-                nn.iter()
-                    .try_fold(1_usize, |sum, &component| sum.checked_mul(component))
-                    .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
+            let (mut name_state, mut graph) = (
                 (0..nn.len()).fold(Vec::try_with_capacity(nn.len())?, |mut output, _| {
                     output.push(0);
 
                     output
                 }),
+                G::new(
+                    nn.iter()
+                        .try_fold(1_usize, |sum, &component| sum.checked_mul(component))
+                        .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
+                )
+                .map_err(|e| BuildGraphError::GraphCreationFailed(e))?,
             );
-            let mut graph = G::new(n).map_err(|e| BuildGraphError::GraphCreationFailed(e))?;
             graph.iter_mut().try_fold(
                 // Must account for both the number of digits of the last
                 // vertex's coordinate, as well as the separation dots.
                 String::try_with_capacity(
                     nn.iter()
                         .map(|&component_range| {
-                            if component_range == 0 {
-                                return 0_usize;
-                            }
+                            // `!(c <= 0)` should hold for any component `c` in
+                            // `nn` once `normalize_board_size()` is done.
+                            debug_assert_ne!(component_range, 0);
 
                             component_range.ilog10() as usize
                         })
@@ -137,13 +140,20 @@ pub(crate) mod basic {
                 |mut name, vertex| {
                     vertex.set_id({
                         name = {
-                            let mut output =
-                                name_state.iter().try_fold(name, |mut name, component| {
+                            let mut output = name_state.iter().enumerate().try_fold(
+                                name,
+                                |mut name, (idx, component)| {
                                     write!(&mut name, "{component}.")
                                         .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
+                                    (..3_usize).contains(&idx).then(|| {
+                                        <G::Vertex as Field<usize, { idx }>>::set_field(
+                                            vertex, *component,
+                                        );
+                                    });
 
                                     Ok::<_, BuildGraphError<_>>(name)
-                                })?;
+                                },
+                            )?;
                             output.pop(); // Get rid of the last `.`.
 
                             output
@@ -165,9 +175,9 @@ pub(crate) mod basic {
                         },
                     );
 
-                    Ok::<_, BuildGraphError<G>>(name)
+                    Ok::<_, BuildGraphError<_>>(name)
                 },
-            );
+            )?;
 
             Ok(graph)
         }
@@ -236,16 +246,16 @@ pub(crate) mod basic {
             }
         }
 
-        // #[cfg_attr(not(doc), replace_fields)]
+        #[cfg_attr(not(doc), replace_fields)]
         pub(crate) trait Board:
             GraphBackend<Vertex: IdExt<Id = <Self as Board>::Id>>
             + for<'a> VertexIterExt<'a, Self>
             + IdExt<Id = <Self as Board>::Id>
-            + FieldsExt<usize, 3>
             + Debug
         where
             for<'a> &'a str: Into<<Self as Board>::Id>,
             for<'a> Self: 'a,
+            <Self as GraphBackend>::Vertex: FieldsExt<usize, 3>,
         {
             type Id;
 

@@ -2,8 +2,9 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    ExprCall, ExprField, ExprStruct, Field, GenericParam, Generics, Ident, ImplItem, ImplItemFn,
-    Index, ItemFn, ItemImpl, ItemTrait, Path, Result as SynResult, Token, Type, TypeTuple,
+    Expr, ExprCall, ExprField, ExprLit, ExprStruct, Field, GenericArgument, GenericParam, Generics,
+    Ident, ImplItem, ImplItemFn, Index, ItemFn, ItemImpl, ItemTrait, Lit, Path, PathArguments,
+    PredicateType, Result as SynResult, Token, Type, TypeParam, TypeParamBound, TypeTuple,
     Visibility, WhereClause, WherePredicate, braced,
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
@@ -246,39 +247,112 @@ impl FieldExtRequirer {
         match self {
             Self::Trait(mut trait_variant) => {
                 let supertraits = &mut trait_variant.supertraits;
-                let mut fields_params = None;
-                if supertraits.iter().any(|trait_bound| match trait_bound {
-                    syn::TypeParamBound::Trait(trait_bound) => {
-                        let path = &trait_bound.path.segments.last().unwrap();
-
-                        if path.ident == "FieldsExt" {
-                            fields_params = Some(&path.arguments);
-
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                }) {
-                    let fields_params = fields_params.unwrap();
+                let (generic_params, where_clause) = (
+                    &mut trait_variant.generics.params,
+                    &mut trait_variant.generics.where_clause,
+                );
+                process_generic_params(generic_params);
+                if let Some(where_clause) = where_clause {
+                    process_where_clause(where_clause);
                 }
+                process_bounds(supertraits);
 
                 quote! { #trait_variant }
             }
-            Self::FreeFn(fn_variant) => quote! {},
+            Self::FreeFn(mut fn_variant) => {
+                let (generic_params, where_clause) = (
+                    &mut fn_variant.sig.generics.params,
+                    &mut fn_variant.sig.generics.where_clause,
+                );
+                process_generic_params(generic_params);
+                if let Some(where_clause) = where_clause {
+                    process_where_clause(where_clause);
+                }
+
+                quote! { #fn_variant }
+            }
         }
+    }
+}
+
+fn process_generic_params(params: &mut Punctuated<GenericParam, Token![,]>) {
+    for TypeParam { bounds, .. } in params.iter_mut().filter_map(|generic_param| {
+        if let GenericParam::Type(ty) = generic_param {
+            Some(ty)
+        } else {
+            None
+        }
+    }) {
+        process_bounds(bounds);
+    }
+}
+
+fn process_where_clause(clause: &mut WhereClause) {
+    for PredicateType { bounds, .. } in clause.predicates.iter_mut().filter_map(|pred| {
+        if let WherePredicate::Type(ty) = pred {
+            Some(ty)
+        } else {
+            None
+        }
+    }) {
+        process_bounds(bounds);
+    }
+}
+
+fn process_bounds(bounds: &mut Punctuated<TypeParamBound, Token![+]>) {
+    if let Some((idx, field_params)) = bounds.iter().enumerate().find_map(|(idx, trait_bound)| {
+        if let TypeParamBound::Trait(trait_bound) = trait_bound {
+            let path = trait_bound.path.segments.last().unwrap();
+
+            if path.ident == "FieldsExt"
+                && let PathArguments::AngleBracketed(params) = &path.arguments
+            {
+                Some((idx, params.clone()))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }) && let (
+        GenericArgument::Type(ty),
+        GenericArgument::Const(Expr::Lit(ExprLit {
+            lit: Lit::Int(num), ..
+        })),
+    ) = (
+        field_params
+            .args
+            .first()
+            .expect("`FieldsExt` should have the type parameter come first"),
+        field_params
+            .args
+            .last()
+            .expect("`FieldsExt` should have the required amount of type parameters come second"),
+    ) {
+        let num: usize = num
+            .base10_parse()
+            .expect("number of field extensions should be a radix 10 integer");
+        let mut new_bounds: Punctuated<TypeParamBound, Token![+]> = bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, trait_bound)| (i != idx).then_some(trait_bound))
+            .cloned()
+            .collect();
+        for i in 0..num {
+            new_bounds.push(parse_quote! { Field<#ty, #i> });
+        }
+        *bounds = new_bounds;
     }
 }
 
 impl Parse for FieldExtRequirer {
     fn parse(input: ParseStream) -> SynResult<Self> {
-        match (input.fork().parse::<ItemTrait>(), input.parse::<ItemFn>()) {
-            (Ok(trait_variant), _) => Ok(Self::Trait(trait_variant)),
-            (_, Ok(fn_variant)) => Ok(Self::FreeFn(fn_variant)),
-            _ => {
-                Err(input.error("this attribute currently only supports traits and free functions"))
-            }
+        if input.peek3(Token![trait]) {
+            Ok(Self::Trait(input.parse()?))
+        } else if input.peek3(Token![fn]) {
+            Ok(Self::FreeFn(input.parse()?))
+        } else {
+            Err(input.error("this attribute currently only supports traits and free functions"))
         }
     }
 }
@@ -290,6 +364,46 @@ pub fn replace_fields(_: TokenStream, input: TokenStream) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn it_works() {}
+    fn it_works() {
+        let input: FieldExtRequirer = parse_quote! {
+            pub(crate) trait Board:
+                GraphBackend<Vertex: IdExt<Id = <Self as Board>::Id>>
+                + for<'a> VertexIterExt<'a, Self>
+                + IdExt<Id = <Self as Board>::Id>
+                + FieldsExt<usize, 3>
+                + Debug
+            where
+                for<'a> &'a str: Into<<Self as Board>::Id>,
+                for<'a> Self: 'a,
+            {
+                type Id;
+
+                fn board(
+                    mut n1: isize,
+                    mut n2: isize,
+                    mut n3: isize,
+                    mut n4: isize,
+                    piece: NonZeroIsize,
+                    wrap: isize,
+                    directed: isize,
+                ) -> Result<Self, BoardError<Self>> {
+                    let nn = normalize_board_size(&mut n1, &mut n2, &mut n3, &mut n4)?;
+                    let graph: Self = build_graph(&nn)?;
+                    fill_arcs();
+
+                    Ok(graph)
+                }
+
+                fn complete() {}
+                fn transitive() {}
+                fn empty() {}
+                fn circuit() {}
+                fn cycle() {}
+            }
+        };
+        // eprintln!("{}", input.tokenize());
+    }
 }

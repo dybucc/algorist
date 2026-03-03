@@ -1,15 +1,14 @@
 use std::{
     any::{Any, TypeId},
+    borrow::{Borrow, BorrowMut},
     collections::HashMap,
 };
-
-// TODO: fix the `add` macro on functions with the `Fields` trait to instead
-// replace the whole trait item with the corresponding `Field`s.
 
 // TODO: fix the `FieldBuilder` API to allow for fallible operations when
 // performing allocations.
 
-pub(crate) struct FieldBuilder(HashMap<TypeId, Vec<Box<dyn Any>>>);
+#[derive(Debug)]
+pub(crate) struct FieldBuilder(pub(crate) HashMap<TypeId, Vec<Box<dyn Any>>>);
 
 // TODO: get the `TupleConstr` derive proc-macro fixed to work with the updated
 // signature of `FieldBuilder`; Take note of the Rust API guidelines advice on
@@ -70,6 +69,18 @@ impl FieldBuilder {
 }
 
 pub(crate) struct FieldContainer<T>(Vec<T>);
+
+impl<T> Borrow<[T]> for FieldContainer<T> {
+    fn borrow(&self) -> &[T] {
+        &self.0
+    }
+}
+
+impl<T> BorrowMut<[T]> for FieldContainer<T> {
+    fn borrow_mut(&mut self) -> &mut [T] {
+        &mut self.0
+    }
+}
 
 impl<T> AsRef<Vec<T>> for FieldContainer<T> {
     fn as_ref(&self) -> &Vec<T> {
