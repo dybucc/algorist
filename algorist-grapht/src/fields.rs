@@ -7,7 +7,7 @@ use std::{
 // TODO: fix the `FieldBuilder` API to allow for fallible operations when
 // performing allocations.
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct FieldBuilder(pub(crate) HashMap<TypeId, Vec<Box<dyn Any>>>);
 
 // TODO: get the `TupleConstr` derive proc-macro fixed to work with the updated

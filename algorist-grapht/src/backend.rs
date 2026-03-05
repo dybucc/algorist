@@ -1,11 +1,12 @@
 use std::{
     alloc::AllocError,
     any::{Any, TypeId},
-    borrow::Borrow,
-    collections::hash_map::Entry,
+    borrow::{Borrow, BorrowMut},
+    collections::{TryReserveError, hash_map::Entry},
     fmt::{Display, Formatter},
     marker::PhantomData,
     num::NonZeroIsize,
+    ptr,
     rc::Rc,
 };
 
@@ -22,8 +23,8 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct Arc {
-    tip: Option<Rc<Vertex>>,
-    id: String,
+    pub(crate) tip: Option<Rc<Vertex>>,
+    pub(crate) id: String,
 }
 
 impl PartialEq for Arc {
@@ -34,9 +35,9 @@ impl PartialEq for Arc {
 
 #[derive(Debug)]
 pub(crate) struct Vertex {
-    arcs: Vec<Rc<Arc>>,
-    fields: FieldBuilder,
-    id: String,
+    pub(crate) arcs: Vec<Rc<Arc>>,
+    pub(crate) fields: FieldBuilder,
+    pub(crate) id: String,
 }
 
 impl IdExt for Vertex {
@@ -56,8 +57,8 @@ impl IdExt for Vertex {
 
 #[derive(Debug)]
 pub(crate) struct Graph {
-    vertices: Vec<Rc<Vertex>>,
-    id: String,
+    pub(crate) vertices: Vec<Rc<Vertex>>,
+    pub(crate) id: String,
 }
 
 #[derive(Debug, Error)]
@@ -107,19 +108,17 @@ impl Graph {
 
     pub(crate) fn iter(&self) -> Iter<'_> {
         Iter {
-            first: self.vertices.first().map(|ptr| &raw const *ptr),
             len: self.vertices.len(),
             idx: None,
-            _marker: PhantomData,
+            graph: self,
         }
     }
 
     pub(crate) fn iter_mut(&mut self) -> IterMut<'_> {
         IterMut {
-            first: self.vertices.first_mut().map(|ptr| &raw mut *ptr),
             len: self.vertices.len(),
             idx: None,
-            _marker: PhantomData,
+            graph: self,
         }
     }
 
@@ -154,10 +153,9 @@ impl<'a> IntoIterator for &'a mut Graph {
 }
 
 pub(crate) struct IterMut<'a> {
-    first: Option<*mut Rc<Vertex>>,
-    len: usize,
-    idx: Option<usize>,
-    _marker: PhantomData<&'a mut Vertex>,
+    pub(crate) len: usize,
+    pub(crate) idx: Option<usize>,
+    pub(crate) graph: &'a mut Graph,
 }
 
 impl<'a> Iterator for IterMut<'a> {
@@ -176,21 +174,20 @@ impl<'a> Iterator for IterMut<'a> {
                     return None;
                 }
                 *idx += 1;
-                self.first = self.first.map(|ptr| unsafe { ptr.add(1) });
             }
         }
 
-        self.first
-            .as_ref()
-            .map(|ptr| unsafe { &mut *Rc::as_ptr(&**ptr).cast_mut() })
+        self.graph
+            .vertices
+            .get_mut(unsafe { self.idx.unwrap_unchecked() })
+            .map(|ptr| unsafe { Rc::as_ptr(ptr).cast_mut().as_mut_unchecked() })
     }
 }
 
 pub(crate) struct Iter<'a> {
-    first: Option<*const Rc<Vertex>>,
-    len: usize,
-    idx: Option<usize>,
-    _marker: PhantomData<&'a Vertex>,
+    pub(crate) len: usize,
+    pub(crate) idx: Option<usize>,
+    pub(crate) graph: &'a Graph,
 }
 
 impl<'a> Iterator for Iter<'a> {
@@ -209,13 +206,13 @@ impl<'a> Iterator for Iter<'a> {
                     return None;
                 }
                 *idx += 1;
-                self.first = self.first.map(|ptr| unsafe { ptr.add(1) });
             }
         }
 
-        self.first
-            .as_ref()
-            .map(|ptr| unsafe { &*Rc::as_ptr(&**ptr) })
+        self.graph
+            .vertices
+            .get(unsafe { self.idx.unwrap_unchecked() })
+            .map(|ptr| unsafe { Rc::as_ptr(ptr).as_ref_unchecked() })
     }
 }
 
@@ -309,6 +306,7 @@ impl GraphBackend for Graph {
                         output.push(Rc::try_new(Vertex {
                             arcs: Vec::new(),
                             id: String::new(),
+                            fields: FieldBuilder::default(),
                         })?);
 
                         Ok::<_, AllocError>(output)
@@ -392,52 +390,136 @@ impl Field<usize, 2> for Vertex {
     }
 }
 
-impl<T: Default, const N: usize> FieldsExt<T, N> for Vertex
+impl<T, const N: usize> FieldsExt<T, N> for Vertex
 where
     for<'a> T: 'a,
 {
-    fn get_field<Q>(&mut self) -> [Q; N]
-    where
-        T: Borrow<Q>,
-        for<'a> Q: 'a,
-    {
-        match self.fields.0.entry(TypeId::of::<Q>()) {
-            Entry::Occupied(entry) => {
-                let entry = entry.get_mut();
-                if entry.len() < N {
-                    entry.try_reserve_exact(N);
-                }
-            }
-        }
+    type Error = TryReserveError;
 
-        self.fields
-            .0
-            .entry(TypeId::of::<Q>())
-            .and_modify(|ty_vec| {
-                if ty_vec.len() < N {
-                    (0..N).for_each(|_| {
-                        ty_vec.push({
+    fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], Self::Error>
+    where
+        T: BorrowMut<Q> + Default + 'a,
+    {
+        match self.fields.0.entry(TypeId::of::<T>()) {
+            Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                let len = entry.len();
+                if len < N {
+                    entry.try_reserve_exact(N)?;
+                    (len..N).for_each(|_| {
+                        entry.push({
                             let input: Box<dyn Any> = Box::new(T::default());
 
                             input
-                        })
+                        });
                     });
                 }
-            })
-            .or_insert_with(|| {
-                let ty_vec = Vec::trywith();
+                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
+                entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
+                    // SAFETY: all elements `ty` in `entry` are of type `T` by
+                    // virtue of hashing from `T`'s `TypeId` to the bucket of
+                    // values `ty` of type `T`.
+                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                });
 
-                ty_vec
-            });
+                // SAFETY: the pointer actually points to the underlying value
+                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
+                // from, so producing a reference to it is sound.
+                Ok(output.map(|ty| unsafe { &mut *ty }))
+            }
+            Entry::Vacant(key) => {
+                let entry = key.insert({
+                    let mut input = Vec::try_with_capacity(N)?;
+                    input.resize_with(N, || {
+                        let out: Box<dyn Any> = Box::new(T::default());
 
-        todo!()
+                        out
+                    });
+
+                    input
+                });
+                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
+                entry.iter_mut().enumerate().for_each(|(i, ty)| {
+                    // SAFETY: all elements `ty` in `entry` are of type `T`
+                    // because all elements pushed onto the new bucket are of
+                    // type `T`.
+                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                });
+
+                // SAFETY: the pointer actually points to the underlying value
+                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
+                // from, so producing a reference to it is sound.
+                Ok(output.map(|ty| unsafe { &mut *ty }))
+            }
+        }
     }
 
-    fn set_field<Q: Into<T>>(&mut self, other: Q) {}
+    fn chfield_with<'a, Q: 'a, R: Into<T>>(
+        &mut self,
+        function: impl Fn() -> R,
+    ) -> Result<[&mut Q; N], Self::Error>
+    where
+        T: BorrowMut<Q> + 'a,
+    {
+        match self.fields.0.entry(TypeId::of::<T>()) {
+            Entry::Occupied(mut entry) => {
+                let entry = entry.get_mut();
+                let len = entry.len();
+                if len < N {
+                    entry.try_reserve_exact(N)?;
+                    (len..N).for_each(|_| {
+                        entry.push({
+                            let input: Box<dyn Any> = Box::new(function().into());
+
+                            input
+                        });
+                    });
+                }
+                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
+                entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
+                    // SAFETY: all elements `ty` in `entry` are of type `T` by
+                    // virtue of hashing from `T`'s `TypeId` to the bucket of
+                    // values `ty` of type `T`.
+                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                });
+
+                // SAFETY: the pointer actually points to the underlying value
+                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
+                // from, so producing a reference to it is sound.
+                Ok(output.map(|ty| unsafe { &mut *ty }))
+            }
+            Entry::Vacant(key) => {
+                let entry = key.insert({
+                    let mut input = Vec::try_with_capacity(N)?;
+                    input.resize_with(N, || {
+                        let out: Box<dyn Any> = Box::new(function().into());
+
+                        out
+                    });
+
+                    input
+                });
+                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
+                entry.iter_mut().enumerate().for_each(|(i, ty)| {
+                    // SAFETY: all elements `ty` in `entry` are of type `T`
+                    // because all elements pushed onto the new bucket are of
+                    // type `T`.
+                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                });
+
+                // SAFETY: the pointer actually points to the underlying value
+                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
+                // from, so producing a reference to it is sound.
+                Ok(output.map(|ty| unsafe { &mut *ty }))
+            }
+        }
+    }
 }
 
 impl Board for Graph {
-    type Id = String;
+    type GraphId = String;
+    type VertexId = String;
+    type ArcId = String;
 }
 
 pub(crate) mod cmds {}

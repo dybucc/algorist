@@ -5,16 +5,14 @@ pub(crate) mod basic {
             collections::TryReserveError,
             error::Error,
             fmt::{Debug, Display, Formatter, Write as _},
+            hint::unreachable_unchecked,
             num::NonZeroIsize,
             ops::ControlFlow,
         };
 
-        use algorist_grapht_macros::replace_fields;
         use thiserror::Error;
 
-        #[cfg(doc)]
-        use crate::api::FieldsExt;
-        use crate::api::{Field, GraphBackend, IdExt, VertexIterExt};
+        use crate::api::{FieldsExt, GraphBackend, IdExt, VertexIterExt};
 
         #[derive(Debug, Error)]
         pub(crate) enum NormalizationError {
@@ -98,16 +96,17 @@ pub(crate) mod basic {
             }
         }
 
-        #[cfg_attr(not(doc), replace_fields)]
         pub(crate) fn build_graph<
-            S,
-            G: GraphBackend<Vertex: IdExt<Id = S>> + for<'a> VertexIterExt<'a, G> + IdExt<Id = S>,
+            GId,
+            VId,
+            G: GraphBackend<Vertex: IdExt<Id = GId> + FieldsExt<usize, 3>>
+                + for<'a> VertexIterExt<'a, G>
+                + IdExt<Id = VId>,
         >(
             nn: &[usize],
         ) -> Result<G, BuildGraphError<G>>
         where
-            for<'a> &'a str: Into<S>,
-            <G as GraphBackend>::Vertex: FieldsExt<usize, 3>,
+            for<'a> &'a str: Into<GId> + Into<VId>,
         {
             let (mut name_state, mut graph) = (
                 (0..nn.len()).fold(Vec::try_with_capacity(nn.len())?, |mut output, _| {
@@ -138,29 +137,39 @@ pub(crate) mod basic {
                         + nn.len(),
                 )?,
                 |mut name, vertex| {
-                    vertex.set_id({
-                        name = {
-                            let mut output = name_state.iter().enumerate().try_fold(
-                                name,
-                                |mut name, (idx, component)| {
-                                    write!(&mut name, "{component}.")
-                                        .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
-                                    (..3_usize).contains(&idx).then(|| {
-                                        <G::Vertex as Field<usize, { idx }>>::set_field(
-                                            vertex, *component,
-                                        );
-                                    });
+                    name = {
+                        let mut output = name_state.iter().enumerate().try_fold(
+                            name,
+                            |mut name, (idx, component)| {
+                                write!(&mut name, "{component}.")
+                                    .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
+                                (..3_usize).contains(&idx).then(|| {
+                                    let [x, y, z] = <<G as GraphBackend>::Vertex as FieldsExt<
+                                        usize,
+                                        3,
+                                    >>::chfield(
+                                        vertex
+                                    )
+                                    .map_err(|_| todo!())?;
+                                    match idx {
+                                        0 => *x = *component,
+                                        1 => *y = *component,
+                                        2 => *z = *component,
+                                        // SAFETY: `idx` only ever takes on the
+                                        // values in the range `0..3` if this
+                                        // execution branch runs.
+                                        _ => unsafe { unreachable_unchecked() },
+                                    }
+                                });
 
-                                    Ok::<_, BuildGraphError<_>>(name)
-                                },
-                            )?;
-                            output.pop(); // Get rid of the last `.`.
+                                Ok::<_, BuildGraphError<_>>(name)
+                            },
+                        )?;
+                        output.pop(); // Get rid of the last `.`.
 
-                            output
-                        };
-
-                        name.as_str()
-                    });
+                        output
+                    };
+                    vertex.set_id(&*name);
                     name.clear();
                     let _ = name_state.iter_mut().enumerate().rev().try_fold(
                         (),
@@ -246,18 +255,20 @@ pub(crate) mod basic {
             }
         }
 
-        #[cfg_attr(not(doc), replace_fields)]
         pub(crate) trait Board:
-            GraphBackend<Vertex: IdExt<Id = <Self as Board>::Id>>
+            GraphBackend<Vertex: IdExt<Id = <Self as Board>::VertexId> + FieldsExt<usize, 3>>
             + for<'a> VertexIterExt<'a, Self>
-            + IdExt<Id = <Self as Board>::Id>
+            + IdExt<Id = <Self as Board>::GraphId>
             + Debug
         where
-            for<'a> &'a str: Into<<Self as Board>::Id>,
+            for<'a> &'a str: Into<<Self as Board>::GraphId>
+                + Into<<Self as Board>::VertexId>
+                + Into<<Self as Board>::ArcId>,
             for<'a> Self: 'a,
-            <Self as GraphBackend>::Vertex: FieldsExt<usize, 3>,
         {
-            type Id;
+            type GraphId;
+            type VertexId;
+            type ArcId;
 
             fn board(
                 mut n1: isize,

@@ -1,4 +1,7 @@
-use std::{borrow::Borrow, error::Error};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    error::Error,
+};
 
 use num_traits::AsPrimitive;
 
@@ -59,12 +62,18 @@ pub(crate) trait Field<T, const N: usize> {
 }
 
 pub(crate) trait FieldsExt<T, const N: usize> {
-    fn get_field<Q>(&mut self) -> [Q; N]
-    where
-        T: Borrow<Q> + Default,
-        for<'a> Q: 'a;
+    type Error: Error;
 
-    fn set_field<Q: Into<T>>(&mut self, other: Q);
+    fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], Self::Error>
+    where
+        T: BorrowMut<Q> + Default + 'a;
+
+    fn chfield_with<'a, Q: 'a, R: Into<T>>(
+        &mut self,
+        function: impl Fn() -> R,
+    ) -> Result<[&mut Q; N], Self::Error>
+    where
+        T: BorrowMut<Q> + 'a;
 }
 
 pub(crate) trait Command<T, U: GraphBackend> {
