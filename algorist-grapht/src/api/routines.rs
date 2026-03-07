@@ -75,22 +75,20 @@ pub(crate) mod basic {
         }
 
         #[derive(Debug, Error)]
-        pub(crate) enum BuildGraphError<G: GraphBackend> {
+        pub(crate) enum BuildGraphError {
             #[error("input component sizes produce a larger-than-signed machine word vertex count")]
             ComponentSizesOutOfBounds,
-            /// Doesn't implement `From<G::Error>` because at this point
-            /// `G::Error` could be anything, including `BuildGraphError`
-            /// itself, for which there's already a blanket implementation in
-            /// `std`.
             #[error(transparent)]
-            GraphCreationFailed(G::Error),
+            GraphCreationFailed(Box<dyn Error>),
             #[error("auxiliary heap allocation failed")]
             AuxiliaryAllocFailed,
             #[error("writing onto the name stream for vertex ids failed")]
             FaultyStreamWrite,
+            #[error(transparent)]
+            WrongFieldAccess(Box<dyn Error>),
         }
 
-        impl<G: GraphBackend> From<TryReserveError> for BuildGraphError<G> {
+        impl From<TryReserveError> for BuildGraphError {
             fn from(_: TryReserveError) -> Self {
                 Self::AuxiliaryAllocFailed
             }
@@ -104,9 +102,11 @@ pub(crate) mod basic {
                 + IdExt<Id = VId>,
         >(
             nn: &[usize],
-        ) -> Result<G, BuildGraphError<G>>
+        ) -> Result<G, BuildGraphError>
         where
             for<'a> &'a str: Into<GId> + Into<VId>,
+            for<'a> <<G as GraphBackend>::Vertex as FieldsExt<usize, 3>>::Error: 'a,
+            for<'a> <G as GraphBackend>::Error: 'a,
         {
             let (mut name_state, mut graph) = (
                 (0..nn.len()).fold(Vec::try_with_capacity(nn.len())?, |mut output, _| {
@@ -119,7 +119,11 @@ pub(crate) mod basic {
                         .try_fold(1_usize, |sum, &component| sum.checked_mul(component))
                         .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
                 )
-                .map_err(|e| BuildGraphError::GraphCreationFailed(e))?,
+                .map_err(|e| {
+                    let inp: Box<dyn Error> = Box::new(e);
+
+                    BuildGraphError::GraphCreationFailed(inp)
+                })?,
             );
             graph.iter_mut().try_fold(
                 // Must account for both the number of digits of the last
@@ -143,26 +147,35 @@ pub(crate) mod basic {
                             |mut name, (idx, component)| {
                                 write!(&mut name, "{component}.")
                                     .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
-                                (..3_usize).contains(&idx).then(|| {
-                                    let [x, y, z] = <<G as GraphBackend>::Vertex as FieldsExt<
+                                (..3_usize).contains(&idx).then_some(()).iter().try_fold(
+                                    (),
+                                    |(), result| {
+                                        let [x, y, z] = <<G as GraphBackend>::Vertex as FieldsExt<
                                         usize,
                                         3,
                                     >>::chfield(
                                         vertex
                                     )
-                                    .map_err(|_| todo!())?;
-                                    match idx {
-                                        0 => *x = *component,
-                                        1 => *y = *component,
-                                        2 => *z = *component,
-                                        // SAFETY: `idx` only ever takes on the
-                                        // values in the range `0..3` if this
-                                        // execution branch runs.
-                                        _ => unsafe { unreachable_unchecked() },
-                                    }
-                                });
+                                    .map_err(|e| {
+                                        let inp: Box<dyn Error> = Box::new(e);
 
-                                Ok::<_, BuildGraphError<_>>(name)
+                                        BuildGraphError::WrongFieldAccess(inp)
+                                    })?;
+                                        match idx {
+                                            0 => *x = *component,
+                                            1 => *y = *component,
+                                            2 => *z = *component,
+                                            // SAFETY: `idx` only ever takes on the
+                                            // values in the range `0..3` if this
+                                            // execution branch runs.
+                                            _ => unsafe { unreachable_unchecked() },
+                                        }
+
+                                        Ok::<_, BuildGraphError>(())
+                                    },
+                                )?;
+
+                                Ok::<_, BuildGraphError>(name)
                             },
                         )?;
                         output.pop(); // Get rid of the last `.`.
@@ -184,7 +197,7 @@ pub(crate) mod basic {
                         },
                     );
 
-                    Ok::<_, BuildGraphError<_>>(name)
+                    Ok::<_, BuildGraphError>(name)
                 },
             )?;
 
@@ -234,17 +247,19 @@ pub(crate) mod basic {
             }
         }
 
-        impl<G: GraphBackend + Debug> From<BuildGraphError<G>> for BoardError<G>
+        impl<G: GraphBackend + Debug> From<BuildGraphError> for BoardError<G>
         where
             for<'a> G: 'a,
         {
-            fn from(value: BuildGraphError<G>) -> Self {
+            fn from(value: BuildGraphError) -> Self {
                 match value {
                     BuildGraphError::ComponentSizesOutOfBounds => {
                         Self::GraphBuild(GraphBuildErrorSrc::ComponentSizesOutOfBounds)
                     }
                     BuildGraphError::GraphCreationFailed(e) => {
-                        Self::GraphBuild(GraphBuildErrorSrc::GraphCreationFailed(e))
+                        Self::GraphBuild(GraphBuildErrorSrc::GraphCreationFailed(unsafe {
+                            *e.downcast().unwrap_unchecked()
+                        }))
                     }
                     e => Self::Other({
                         let output: Box<dyn Error> = Box::new(e);

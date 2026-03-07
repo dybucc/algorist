@@ -396,71 +396,33 @@ where
 {
     type Error = TryReserveError;
 
-    fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], Self::Error>
-    where
-        T: BorrowMut<Q> + Default + 'a,
-    {
-        match self.fields.0.entry(TypeId::of::<T>()) {
-            Entry::Occupied(mut entry) => {
-                let entry = entry.get_mut();
-                let len = entry.len();
-                if len < N {
-                    entry.try_reserve_exact(N)?;
-                    (len..N).for_each(|_| {
-                        entry.push({
-                            let input: Box<dyn Any> = Box::new(T::default());
-
-                            input
-                        });
-                    });
-                }
-                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
-                entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
-                    // SAFETY: all elements `ty` in `entry` are of type `T` by
-                    // virtue of hashing from `T`'s `TypeId` to the bucket of
-                    // values `ty` of type `T`.
-                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
-                });
-
-                // SAFETY: the pointer actually points to the underlying value
-                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
-                // from, so producing a reference to it is sound.
-                Ok(output.map(|ty| unsafe { &mut *ty }))
-            }
-            Entry::Vacant(key) => {
-                let entry = key.insert({
-                    let mut input = Vec::try_with_capacity(N)?;
-                    input.resize_with(N, || {
-                        let out: Box<dyn Any> = Box::new(T::default());
-
-                        out
-                    });
-
-                    input
-                });
-                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
-                entry.iter_mut().enumerate().for_each(|(i, ty)| {
-                    // SAFETY: all elements `ty` in `entry` are of type `T`
-                    // because all elements pushed onto the new bucket are of
-                    // type `T`.
-                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
-                });
-
-                // SAFETY: the pointer actually points to the underlying value
-                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
-                // from, so producing a reference to it is sound.
-                Ok(output.map(|ty| unsafe { &mut *ty }))
-            }
-        }
-    }
-
     fn chfield_with<'a, Q: 'a, R: Into<T>>(
         &mut self,
-        function: impl Fn() -> R,
+        mut function: impl FnMut() -> R,
     ) -> Result<[&mut Q; N], Self::Error>
     where
         T: BorrowMut<Q> + 'a,
     {
+        fn extract_n<'a, S: FieldsExt<T, N> + 'a, T, Q: 'a, const N: usize>(
+            entry: &mut Vec<Box<dyn Any>>,
+        ) -> [&'a mut Q; N]
+        where
+            for<'b> T: 'b + BorrowMut<Q>,
+        {
+            let mut output = [ptr::null_mut(); N];
+            entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
+                // SAFETY: all elements `ty` in `entry` are of type `T` by
+                // virtue of hashing from `T`'s `TypeId` to the bucket of
+                // values `ty` of type `T`.
+                output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+            });
+
+            // SAFETY: the pointer actually points to the underlying value
+            // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
+            // from, so producing a reference to it is sound.
+            output.map(|ty| unsafe { ty.as_mut_unchecked() })
+        }
+
         match self.fields.0.entry(TypeId::of::<T>()) {
             Entry::Occupied(mut entry) => {
                 let entry = entry.get_mut();
@@ -469,48 +431,28 @@ where
                     entry.try_reserve_exact(N)?;
                     (len..N).for_each(|_| {
                         entry.push({
-                            let input: Box<dyn Any> = Box::new(function().into());
+                            let out: Box<dyn Any> = Box::new(function().into());
 
-                            input
+                            out
                         });
                     });
                 }
-                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
-                entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
-                    // SAFETY: all elements `ty` in `entry` are of type `T` by
-                    // virtue of hashing from `T`'s `TypeId` to the bucket of
-                    // values `ty` of type `T`.
-                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
-                });
 
-                // SAFETY: the pointer actually points to the underlying value
-                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
-                // from, so producing a reference to it is sound.
-                Ok(output.map(|ty| unsafe { &mut *ty }))
+                Ok(extract_n::<Self, T, Q, N>(entry))
             }
             Entry::Vacant(key) => {
                 let entry = key.insert({
-                    let mut input = Vec::try_with_capacity(N)?;
-                    input.resize_with(N, || {
+                    let mut entry = Vec::try_with_capacity(N)?;
+                    entry.resize_with(N, || {
                         let out: Box<dyn Any> = Box::new(function().into());
 
                         out
                     });
 
-                    input
-                });
-                let mut output: [*mut Q; N] = [ptr::null_mut(); N];
-                entry.iter_mut().enumerate().for_each(|(i, ty)| {
-                    // SAFETY: all elements `ty` in `entry` are of type `T`
-                    // because all elements pushed onto the new bucket are of
-                    // type `T`.
-                    output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                    entry
                 });
 
-                // SAFETY: the pointer actually points to the underlying value
-                // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
-                // from, so producing a reference to it is sound.
-                Ok(output.map(|ty| unsafe { &mut *ty }))
+                Ok(extract_n::<Self, T, Q, N>(entry))
             }
         }
     }

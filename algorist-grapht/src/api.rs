@@ -66,11 +66,14 @@ pub(crate) trait FieldsExt<T, const N: usize> {
 
     fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], Self::Error>
     where
-        T: BorrowMut<Q> + Default + 'a;
+        T: BorrowMut<Q> + Default + 'a,
+    {
+        self.chfield_with(<T as Default>::default)
+    }
 
     fn chfield_with<'a, Q: 'a, R: Into<T>>(
         &mut self,
-        function: impl Fn() -> R,
+        function: impl FnMut() -> R,
     ) -> Result<[&mut Q; N], Self::Error>
     where
         T: BorrowMut<Q> + 'a;
