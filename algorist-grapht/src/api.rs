@@ -22,22 +22,18 @@ pub(crate) trait GraphBackend: Sized {
 
     type Error: Error;
 
-    fn new<T: AsPrimitive<usize>>(n: T) -> Result<Self, Self::Error>;
+    fn new<T: AsPrimitive<usize>>(n: T) -> Result<Self, <Self as GraphBackend>::Error>;
 
-    fn cmd_mut<T: CommandMut<U, Self>, U>(&mut self, cmd: T) -> U {
-        cmd.execute(self)
-    }
-    fn cmd<T: Command<U, Self>, U>(&self, cmd: T) -> U {
-        cmd.execute(self)
-    }
+    fn cmd_mut<T: CommandMut<U, Self>, U>(&mut self, cmd: T) -> U { cmd.execute(self) }
+    fn cmd<T: Command<U, Self>, U>(&self, cmd: T) -> U { cmd.execute(self) }
 }
 
 pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
     type SharedIter: Iterator<Item: 'a, Item = &'a G::Vertex> + 'a;
     type ExclusiveIter: Iterator<Item: 'a, Item = &'a mut G::Vertex> + 'a;
 
-    fn iter(&'a self) -> Self::SharedIter;
-    fn iter_mut(&'a mut self) -> Self::ExclusiveIter;
+    fn iter(&'a self) -> <Self as VertexIterExt<'a, G>>::SharedIter;
+    fn iter_mut(&'a mut self) -> <Self as VertexIterExt<'a, G>>::ExclusiveIter;
 }
 
 pub(crate) trait IdExt {
@@ -45,36 +41,28 @@ pub(crate) trait IdExt {
 
     fn get_id<T: ?Sized>(&self) -> &T
     where
-        Self::Id: Borrow<T>;
+        <Self as IdExt>::Id: Borrow<T>;
 
-    fn set_id_with<T: Into<Self::Id>>(&mut self, other_fn: impl FnOnce() -> T);
-    fn set_id<T: Into<Self::Id>>(&mut self, other: T) {
+    fn set_id_with<T: Into<<Self as IdExt>::Id>>(&mut self, other_fn: impl FnOnce() -> T);
+    fn set_id<T: Into<<Self as IdExt>::Id>>(&mut self, other: T) {
         self.set_id_with(|| other.into());
     }
-}
-
-pub(crate) trait Field<T, const N: usize> {
-    fn get_field<Q>(&self) -> &Q
-    where
-        T: Borrow<Q>;
-
-    fn set_field<Q: Into<T>>(&mut self, other: Q);
 }
 
 pub(crate) trait FieldsExt<T, const N: usize> {
     type Error: Error;
 
-    fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], Self::Error>
+    fn chfield<'a, Q: 'a>(&mut self) -> Result<[&mut Q; N], <Self as FieldsExt<T, N>>::Error>
     where
         T: BorrowMut<Q> + Default + 'a,
     {
-        self.chfield_with(<T as Default>::default)
+        self.chfield_with(|| Ok::<_, <Self as FieldsExt<T, N>>::Error>(<T as Default>::default()))
     }
 
-    fn chfield_with<'a, Q: 'a, R: Into<T>>(
+    fn chfield_with<'a, Q: 'a, R: Into<T>, E: Into<<Self as FieldsExt<T, N>>::Error>>(
         &mut self,
-        function: impl FnMut() -> R,
-    ) -> Result<[&mut Q; N], Self::Error>
+        function: impl FnMut() -> Result<R, E>,
+    ) -> Result<[&mut Q; N], <Self as FieldsExt<T, N>>::Error>
     where
         T: BorrowMut<Q> + 'a;
 }

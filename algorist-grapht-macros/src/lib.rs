@@ -2,20 +2,47 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::quote;
 use syn::{
-    Expr, ExprCall, ExprField, ExprLit, ExprStruct, Field, GenericArgument, GenericParam, Generics,
-    Ident, ImplItem, ImplItemFn, Index, ItemFn, ItemImpl, ItemTrait, Lit, Path, PathArguments,
-    PredicateType, Result as SynResult, Token, Type, TypeParam, TypeParamBound, TypeTuple,
-    Visibility, WhereClause, WherePredicate, braced,
+    Expr,
+    ExprCall,
+    ExprField,
+    ExprLit,
+    ExprStruct,
+    Field,
+    GenericArgument,
+    GenericParam,
+    Generics,
+    Ident,
+    ImplItem,
+    ImplItemFn,
+    Index,
+    ItemFn,
+    ItemImpl,
+    ItemTrait,
+    Lit,
+    Path,
+    PathArguments,
+    PredicateType,
+    Result as SynResult,
+    Token,
+    Type,
+    TypeParam,
+    TypeParamBound,
+    TypeTuple,
+    Visibility,
+    WhereClause,
+    WherePredicate,
+    braced,
     parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
+    parse_macro_input,
+    parse_quote,
     punctuated::Punctuated,
     token::Brace,
 };
 
 struct Primitive {
-    _struct_token: Token![struct],
-    type_name: Ident,
-    _brace_token: Brace,
+    _struct_token:   Token![struct],
+    type_name:       Ident,
+    _brace_token:    Brace,
     existing_fields: Punctuated<Field, Token![,]>,
 }
 
@@ -44,9 +71,9 @@ impl Parse for Primitive {
         let content;
 
         Ok(Self {
-            _struct_token: input.parse()?,
-            type_name: input.parse()?,
-            _brace_token: braced!(content in input),
+            _struct_token:   input.parse()?,
+            type_name:       input.parse()?,
+            _brace_token:    braced!(content in input),
             existing_fields: content.parse_terminated(Field::parse_named, Token![,])?,
         })
     }
@@ -58,18 +85,14 @@ struct Tweaks {
 
 impl Parse for Tweaks {
     fn parse(input: ParseStream) -> SynResult<Self> {
-        Ok(Self {
-            additional_fields: input.parse_terminated(Field::parse_named, Token![,])?,
-        })
+        Ok(Self { additional_fields: input.parse_terminated(Field::parse_named, Token![,])? })
     }
 }
 
 #[proc_macro_attribute]
 pub fn add_fields(changes: TokenStream, subject: TokenStream) -> TokenStream {
-    let (changes, mut subject) = (
-        parse_macro_input!(changes as Tweaks),
-        parse_macro_input!(subject as Primitive),
-    );
+    let (changes, mut subject) =
+        (parse_macro_input!(changes as Tweaks), parse_macro_input!(subject as Primitive));
 
     subject.add_fields(changes);
 
@@ -82,14 +105,7 @@ impl SeqPrimitive {
     fn tokenize(self) -> TokenStream2 {
         let (mut arc_fields, mut vertex_fields, mut graph_fields) = (None, None, None);
 
-        for ExprStruct {
-            path: Path {
-                segments: ident, ..
-            },
-            fields,
-            ..
-        } in self.0
-        {
+        for ExprStruct { path: Path { segments: ident, .. }, fields, .. } in self.0 {
             match ident
                 .first()
                 .expect(
@@ -100,10 +116,10 @@ impl SeqPrimitive {
                 .to_string()
                 .as_str()
             {
-                "Graph" => graph_fields = Some(fields),
-                "Vertex" => vertex_fields = Some(fields),
-                "Arc" => arc_fields = Some(fields),
-                _ => (),
+                | "Graph" => graph_fields = Some(fields),
+                | "Vertex" => vertex_fields = Some(fields),
+                | "Arc" => arc_fields = Some(fields),
+                | _ => (),
             }
         }
 
@@ -172,15 +188,15 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
     }
 
     let mut impl_block = ItemImpl {
-        attrs: Default::default(),
+        attrs:       Default::default(),
         defaultness: None,
-        unsafety: None,
-        impl_token: Default::default(),
-        generics: Default::default(),
-        trait_: None,
-        self_ty: Box::new(parse_quote! { FieldBuilder }),
+        unsafety:    None,
+        impl_token:  Default::default(),
+        generics:    Default::default(),
+        trait_:      None,
+        self_ty:     Box::new(parse_quote! { FieldBuilder }),
         brace_token: Default::default(),
-        items: Vec::with_capacity(1000),
+        items:       Vec::with_capacity(1000),
     };
 
     (1..=16).for_each(|ident_state| {
@@ -198,39 +214,33 @@ pub fn gen_tuple_constructors(_: TokenStream) -> TokenStream {
             where_output.push(parse_quote! { for<'a> #ident: 'a });
             params_output.push(parse_quote! { #ident });
 
-            let ident = Index {
-                index: ident_state - 1,
-                span: Span::call_site(),
-            };
+            let ident = Index { index: ident_state - 1, span: Span::call_site() };
             let field_access: ExprField = parse_quote! { fields.#ident };
 
             block_output.push(parse_quote! { Box::new(#field_access) });
         });
 
         impl_block.items.push(ImplItem::Fn(ImplItemFn {
-            attrs: Default::default(),
-            vis: Visibility::Public(Default::default()),
+            attrs:       Default::default(),
+            vis:         Visibility::Public(Default::default()),
             defaultness: None,
-            sig: {
+            sig:         {
                 let ident = Ident::new(&format!("with_{ident_state}"), Span::call_site());
 
                 let (generics, params, where_clause): (_, _, WhereClause) = (
                     Generics {
-                        lt_token: Default::default(),
-                        params: generics_output,
-                        gt_token: Default::default(),
+                        lt_token:     Default::default(),
+                        params:       generics_output,
+                        gt_token:     Default::default(),
                         where_clause: None,
                     },
-                    TypeTuple {
-                        paren_token: Default::default(),
-                        elems: params_output,
-                    },
+                    TypeTuple { paren_token: Default::default(), elems: params_output },
                     parse_quote! { where #where_output },
                 );
 
                 parse_quote! { fn #ident #generics (fields: #params) -> Self #where_clause }
             },
-            block: parse_quote! { { Self(vec![#block_output]) } },
+            block:       parse_quote! { { Self(vec![#block_output]) } },
         }));
     });
 
@@ -245,12 +255,10 @@ enum FieldExtRequirer {
 impl FieldExtRequirer {
     fn tokenize(self) -> TokenStream2 {
         match self {
-            Self::Trait(mut trait_variant) => {
+            | Self::Trait(mut trait_variant) => {
                 let supertraits = &mut trait_variant.supertraits;
-                let (generic_params, where_clause) = (
-                    &mut trait_variant.generics.params,
-                    &mut trait_variant.generics.where_clause,
-                );
+                let (generic_params, where_clause) =
+                    (&mut trait_variant.generics.params, &mut trait_variant.generics.where_clause);
                 process_generic_params(generic_params);
                 if let Some(where_clause) = where_clause {
                     process_where_clause(where_clause);
@@ -258,11 +266,10 @@ impl FieldExtRequirer {
                 process_bounds(supertraits);
 
                 quote! { #trait_variant }
-            }
-            Self::FreeFn(mut fn_variant) => {
+            },
+            | Self::FreeFn(mut fn_variant) => {
                 let (generic_params, where_clause) = (
-                    &mut fn_variant.sig.generics.params,
-                    &mut fn_variant.sig.generics.where_clause,
+                    &mut fn_variant.sig.generics.params, &mut fn_variant.sig.generics.where_clause,
                 );
                 process_generic_params(generic_params);
                 if let Some(where_clause) = where_clause {
@@ -270,31 +277,25 @@ impl FieldExtRequirer {
                 }
 
                 quote! { #fn_variant }
-            }
+            },
         }
     }
 }
 
 fn process_generic_params(params: &mut Punctuated<GenericParam, Token![,]>) {
     for TypeParam { bounds, .. } in params.iter_mut().filter_map(|generic_param| {
-        if let GenericParam::Type(ty) = generic_param {
-            Some(ty)
-        } else {
-            None
-        }
+        if let GenericParam::Type(ty) = generic_param { Some(ty) } else { None }
     }) {
         process_bounds(bounds);
     }
 }
 
 fn process_where_clause(clause: &mut WhereClause) {
-    for PredicateType { bounds, .. } in clause.predicates.iter_mut().filter_map(|pred| {
-        if let WherePredicate::Type(ty) = pred {
-            Some(ty)
-        } else {
-            None
-        }
-    }) {
+    for PredicateType { bounds, .. } in clause
+        .predicates
+        .iter_mut()
+        .filter_map(|pred| if let WherePredicate::Type(ty) = pred { Some(ty) } else { None })
+    {
         process_bounds(bounds);
     }
 }
@@ -316,22 +317,16 @@ fn process_bounds(bounds: &mut Punctuated<TypeParamBound, Token![+]>) {
         }
     }) && let (
         GenericArgument::Type(ty),
-        GenericArgument::Const(Expr::Lit(ExprLit {
-            lit: Lit::Int(num), ..
-        })),
+        GenericArgument::Const(Expr::Lit(ExprLit { lit: Lit::Int(num), .. })),
     ) = (
-        field_params
-            .args
-            .first()
-            .expect("`FieldsExt` should have the type parameter come first"),
+        field_params.args.first().expect("`FieldsExt` should have the type parameter come first"),
         field_params
             .args
             .last()
             .expect("`FieldsExt` should have the required amount of type parameters come second"),
     ) {
-        let num: usize = num
-            .base10_parse()
-            .expect("number of field extensions should be a radix 10 integer");
+        let num: usize =
+            num.base10_parse().expect("number of field extensions should be a radix 10 integer");
         let mut new_bounds: Punctuated<TypeParamBound, Token![+]> = bounds
             .iter()
             .enumerate()

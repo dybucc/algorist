@@ -12,7 +12,10 @@ pub(crate) mod basic {
 
         use thiserror::Error;
 
-        use crate::api::{FieldsExt, GraphBackend, IdExt, VertexIterExt};
+        use crate::{
+            api::{FieldsExt, GraphBackend, IdExt, VertexIterExt},
+            fields_of,
+        };
 
         #[derive(Debug, Error)]
         pub(crate) enum NormalizationError {
@@ -21,9 +24,7 @@ pub(crate) mod basic {
         }
 
         impl From<TryReserveError> for NormalizationError {
-            fn from(_: TryReserveError) -> Self {
-                Self::ComponentRangesAllocFailed
-            }
+            fn from(_: TryReserveError) -> Self { Self::ComponentRangesAllocFailed }
         }
 
         pub(crate) fn normalize_board_size(
@@ -38,36 +39,33 @@ pub(crate) mod basic {
                 .try_fold(
                     Vec::try_with_capacity(4)?,
                     |mut components, (component_num, &component)| match component.cmp(&0) {
-                        Ordering::Less | Ordering::Equal if component_num == 0 => {
+                        | Ordering::Less | Ordering::Equal if component_num == 0 =>
                             ControlFlow::Break(Ok((0..2).fold(components, |mut output, _| {
                                 output.push(8);
 
                                 output
-                            })))
-                        }
-                        Ordering::Less => ControlFlow::Break({
+                            }))),
+                        | Ordering::Less => ControlFlow::Break({
                             components.clear();
 
-                            components
-                                .try_reserve_exact(component.unsigned_abs())
-                                .map(|()| {
-                                    [*n1, *n2, *n3]
-                                        .into_iter()
-                                        .take(component_num)
-                                        .cycle()
-                                        .take(component.unsigned_abs())
-                                        .map(isize::cast_unsigned)
-                                        .collect_into(&mut components);
+                            components.try_reserve_exact(component.unsigned_abs()).map(|()| {
+                                [*n1, *n2, *n3]
+                                    .into_iter()
+                                    .take(component_num)
+                                    .cycle()
+                                    .take(component.unsigned_abs())
+                                    .map(isize::cast_unsigned)
+                                    .collect_into(&mut components);
 
-                                    components
-                                })
+                                components
+                            })
                         }),
-                        Ordering::Equal => ControlFlow::Break(Ok(components)),
-                        Ordering::Greater => {
+                        | Ordering::Equal => ControlFlow::Break(Ok(components)),
+                        | Ordering::Greater => ControlFlow::Continue({
                             components.push(component.cast_unsigned());
 
-                            ControlFlow::Continue(components)
-                        }
+                            components
+                        }),
                     },
                 )
                 .map_continue(Ok)
@@ -89,9 +87,7 @@ pub(crate) mod basic {
         }
 
         impl From<TryReserveError> for BuildGraphError {
-            fn from(_: TryReserveError) -> Self {
-                Self::AuxiliaryAllocFailed
-            }
+            fn from(_: TryReserveError) -> Self { Self::AuxiliaryAllocFailed }
         }
 
         pub(crate) fn build_graph<
@@ -120,9 +116,9 @@ pub(crate) mod basic {
                         .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
                 )
                 .map_err(|e| {
-                    let inp: Box<dyn Error> = Box::new(e);
+                    let input: Box<dyn Error> = Box::new(e);
 
-                    BuildGraphError::GraphCreationFailed(inp)
+                    BuildGraphError::GraphCreationFailed(input)
                 })?,
             );
             graph.iter_mut().try_fold(
@@ -132,7 +128,7 @@ pub(crate) mod basic {
                     nn.iter()
                         .map(|&component_range| {
                             // `!(c <= 0)` should hold for any component `c` in
-                            // `nn` once `normalize_board_size()` is done.
+                            // `nn` after running `normalize_board_size()`.
                             debug_assert_ne!(component_range, 0);
 
                             component_range.ilog10() as usize
@@ -147,28 +143,23 @@ pub(crate) mod basic {
                             |mut name, (idx, component)| {
                                 write!(&mut name, "{component}.")
                                     .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
-                                (..3_usize).contains(&idx).then_some(()).iter().try_fold(
+                                (..3).contains(&idx).then_some(()).iter().try_fold(
                                     (),
-                                    |(), result| {
-                                        let [x, y, z] = <<G as GraphBackend>::Vertex as FieldsExt<
-                                        usize,
-                                        3,
-                                    >>::chfield(
-                                        vertex
-                                    )
-                                    .map_err(|e| {
-                                        let inp: Box<dyn Error> = Box::new(e);
+                                    |(), ()| {
+                                        let [x, y, z] = fields_of!(3; usize | v in G: vertex)
+                                            .map_err(|e| {
+                                                let ext: Box<dyn Error> = Box::new(e);
 
-                                        BuildGraphError::WrongFieldAccess(inp)
-                                    })?;
+                                                BuildGraphError::WrongFieldAccess(ext)
+                                            })?;
                                         match idx {
-                                            0 => *x = *component,
-                                            1 => *y = *component,
-                                            2 => *z = *component,
-                                            // SAFETY: `idx` only ever takes on the
-                                            // values in the range `0..3` if this
-                                            // execution branch runs.
-                                            _ => unsafe { unreachable_unchecked() },
+                                            | 0 => *x = *component,
+                                            | 1 => *y = *component,
+                                            | 2 => *z = *component,
+                                            // SAFETY: `idx` only ever takes
+                                            // on the values in the range
+                                            // `0..3`.
+                                            | _ => unsafe { unreachable_unchecked() },
                                         }
 
                                         Ok::<_, BuildGraphError>(())
@@ -215,10 +206,10 @@ pub(crate) mod basic {
         impl<G: GraphBackend> Display for GraphBuildErrorSrc<G> {
             fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
                 match self {
-                    Self::ComponentSizesOutOfBounds => {
+                    | Self::ComponentSizesOutOfBounds => {
                         write!(f, "value range for component is disproportionately large")
-                    }
-                    Self::GraphCreationFailed(e) => Display::fmt(e, f),
+                    },
+                    | Self::GraphCreationFailed(e) => Display::fmt(e, f),
                 }
             }
         }
@@ -242,7 +233,7 @@ pub(crate) mod basic {
         impl<G: GraphBackend> From<NormalizationError> for BoardError<G> {
             fn from(value: NormalizationError) -> Self {
                 match value {
-                    NormalizationError::ComponentRangesAllocFailed => Self::Normalization,
+                    | NormalizationError::ComponentRangesAllocFailed => Self::Normalization,
                 }
             }
         }
@@ -253,15 +244,13 @@ pub(crate) mod basic {
         {
             fn from(value: BuildGraphError) -> Self {
                 match value {
-                    BuildGraphError::ComponentSizesOutOfBounds => {
-                        Self::GraphBuild(GraphBuildErrorSrc::ComponentSizesOutOfBounds)
-                    }
-                    BuildGraphError::GraphCreationFailed(e) => {
+                    | BuildGraphError::ComponentSizesOutOfBounds =>
+                        Self::GraphBuild(GraphBuildErrorSrc::ComponentSizesOutOfBounds),
+                    | BuildGraphError::GraphCreationFailed(e) =>
                         Self::GraphBuild(GraphBuildErrorSrc::GraphCreationFailed(unsafe {
                             *e.downcast().unwrap_unchecked()
-                        }))
-                    }
-                    e => Self::Other({
+                        })),
+                    | e => Self::Other({
                         let output: Box<dyn Error> = Box::new(e);
 
                         output

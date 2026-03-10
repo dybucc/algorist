@@ -14,9 +14,7 @@ pub(crate) struct FieldBuilder(pub(crate) HashMap<TypeId, Vec<Box<dyn Any>>>);
 // signature of `FieldBuilder`; Take note of the Rust API guidelines advice on
 // macro hygiene.
 impl FieldBuilder {
-    fn new() -> Self {
-        Self(HashMap::new())
-    }
+    fn new() -> Self { Self(HashMap::new()) }
 
     fn touch<T>(mut self) -> Self
     where
@@ -71,25 +69,17 @@ impl FieldBuilder {
 pub(crate) struct FieldContainer<T>(Vec<T>);
 
 impl<T> Borrow<[T]> for FieldContainer<T> {
-    fn borrow(&self) -> &[T] {
-        &self.0
-    }
+    fn borrow(&self) -> &[T] { &self.0 }
 }
 
 impl<T> BorrowMut<[T]> for FieldContainer<T> {
-    fn borrow_mut(&mut self) -> &mut [T] {
-        &mut self.0
-    }
+    fn borrow_mut(&mut self) -> &mut [T] { &mut self.0 }
 }
 
 impl<T> AsRef<Vec<T>> for FieldContainer<T> {
-    fn as_ref(&self) -> &Vec<T> {
-        &self.0
-    }
+    fn as_ref(&self) -> &Vec<T> { &self.0 }
 }
 
 impl<T> AsMut<Vec<T>> for FieldContainer<T> {
-    fn as_mut(&mut self) -> &mut Vec<T> {
-        &mut self.0
-    }
+    fn as_mut(&mut self) -> &mut Vec<T> { &mut self.0 }
 }

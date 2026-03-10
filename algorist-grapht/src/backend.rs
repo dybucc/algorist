@@ -1,8 +1,7 @@
 use std::{
     alloc::AllocError,
-    any::{Any, TypeId},
+    any::{Any, TypeId, type_name},
     borrow::{Borrow, BorrowMut},
-    collections::{TryReserveError, hash_map::Entry},
     fmt::{Display, Formatter},
     marker::PhantomData,
     num::NonZeroIsize,
@@ -15,7 +14,10 @@ use thiserror::Error;
 
 use crate::{
     api::{
-        Field, FieldsExt, GraphBackend, IdExt, VertexIterExt,
+        FieldsExt,
+        GraphBackend,
+        IdExt,
+        VertexIterExt,
         routines::basic::board::{Board, BoardError},
     },
     fields::FieldBuilder,
@@ -23,8 +25,9 @@ use crate::{
 
 #[derive(Debug)]
 pub(crate) struct Arc {
-    pub(crate) tip: Option<Rc<Vertex>>,
-    pub(crate) id: String,
+    pub(crate) tip:    Option<Rc<Vertex>>,
+    pub(crate) fields: FieldBuilder,
+    pub(crate) id:     String,
 }
 
 impl PartialEq for Arc {
@@ -35,9 +38,9 @@ impl PartialEq for Arc {
 
 #[derive(Debug)]
 pub(crate) struct Vertex {
-    pub(crate) arcs: Vec<Rc<Arc>>,
+    pub(crate) arcs:   Vec<Rc<Arc>>,
     pub(crate) fields: FieldBuilder,
-    pub(crate) id: String,
+    pub(crate) id:     String,
 }
 
 impl IdExt for Vertex {
@@ -58,12 +61,9 @@ impl IdExt for Vertex {
 #[derive(Debug)]
 pub(crate) struct Graph {
     pub(crate) vertices: Vec<Rc<Vertex>>,
-    pub(crate) id: String,
+    pub(crate) fields:   FieldBuilder,
+    pub(crate) id:       String,
 }
-
-#[derive(Debug, Error)]
-#[error("failed to allocate auxiliary memory")]
-pub(crate) struct CloneShallowError;
 
 #[derive(Debug, Error)]
 pub(crate) enum TryIterMutError {
@@ -76,9 +76,7 @@ pub(crate) enum TryIterMutError {
 impl Graph {
     const EXTRA_N: usize = 4;
 
-    pub fn new(n: usize) -> Result<Self, GraphCreationError> {
-        <Self as GraphBackend>::new(n)
-    }
+    pub fn new(n: usize) -> Result<Self, GraphCreationError> { <Self as GraphBackend>::new(n) }
 
     pub fn board(
         n1: isize,
@@ -92,34 +90,12 @@ impl Graph {
         <Self as Board>::board(n1, n2, n3, n4, piece, wrap, directed)
     }
 
-    pub(crate) fn clone_shallow(&self) -> Result<Graph, CloneShallowError> {
-        Ok(Self {
-            vertices: self.vertices.iter().fold(
-                Vec::try_with_capacity(self.vertices.len()).map_err(|_| CloneShallowError)?,
-                |mut container, ptr| {
-                    container.push(Rc::clone(ptr));
-
-                    container
-                },
-            ),
-            id: String::new(),
-        })
-    }
-
     pub(crate) fn iter(&self) -> Iter<'_> {
-        Iter {
-            len: self.vertices.len(),
-            idx: None,
-            graph: self,
-        }
+        Iter { len: self.vertices.len(), idx: None, graph: self }
     }
 
     pub(crate) fn iter_mut(&mut self) -> IterMut<'_> {
-        IterMut {
-            len: self.vertices.len(),
-            idx: None,
-            graph: self,
-        }
+        IterMut { len: self.vertices.len(), idx: None, graph: self }
     }
 
     pub(crate) fn try_iter_mut(&mut self) -> Result<TryIterMut<'_>, TryIterMutError> {
@@ -137,24 +113,29 @@ impl Graph {
                     Ok(container)
                 },
             )?,
-            idx: None,
-            _marker: PhantomData,
+            idx:       None,
+            _marker:   PhantomData,
         })
     }
 }
 
-impl<'a> IntoIterator for &'a mut Graph {
-    type Item = <IterMut<'a> as Iterator>::Item;
-    type IntoIter = IterMut<'a>;
+impl<'a> IntoIterator for &'a Graph {
+    type IntoIter = Iter<'a>;
+    type Item = <Iter<'a> as Iterator>::Item;
 
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter_mut()
-    }
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+
+impl<'a> IntoIterator for &'a mut Graph {
+    type IntoIter = IterMut<'a>;
+    type Item = <IterMut<'a> as Iterator>::Item;
+
+    fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
 }
 
 pub(crate) struct IterMut<'a> {
-    pub(crate) len: usize,
-    pub(crate) idx: Option<usize>,
+    pub(crate) len:   usize,
+    pub(crate) idx:   Option<usize>,
     pub(crate) graph: &'a mut Graph,
 }
 
@@ -163,20 +144,24 @@ impl<'a> Iterator for IterMut<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.idx {
-            None => {
+            | None => {
                 if self.len == 0 {
                     return None;
                 }
                 self.idx = Some(0);
-            }
-            Some(ref mut idx) => {
+            },
+            | Some(ref mut idx) => {
                 if *idx == self.len - 1 {
                     return None;
                 }
                 *idx += 1;
-            }
+            },
         }
 
+        // SAFETY: the index is always `None` at this point, because the above
+        // logic ensures that. The pointer is never `null` because of the
+        // invariants held by `Rc`, and the lifetime is tied to that of the
+        // underlying `graph`.
         self.graph
             .vertices
             .get_mut(unsafe { self.idx.unwrap_unchecked() })
@@ -185,8 +170,8 @@ impl<'a> Iterator for IterMut<'a> {
 }
 
 pub(crate) struct Iter<'a> {
-    pub(crate) len: usize,
-    pub(crate) idx: Option<usize>,
+    pub(crate) len:   usize,
+    pub(crate) idx:   Option<usize>,
     pub(crate) graph: &'a Graph,
 }
 
@@ -195,20 +180,21 @@ impl<'a> Iterator for Iter<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.idx {
-            None => {
+            | None => {
                 if self.len > 0 {
                     return None;
                 }
                 self.idx = Some(0);
-            }
-            Some(ref mut idx) => {
+            },
+            | Some(ref mut idx) => {
                 if *idx == self.len - 1 {
                     return None;
                 }
                 *idx += 1;
-            }
+            },
         }
 
+        // SAFETY: see the safety comment on the same method impl for `IterMut`.
         self.graph
             .vertices
             .get(unsafe { self.idx.unwrap_unchecked() })
@@ -217,27 +203,22 @@ impl<'a> Iterator for Iter<'a> {
 }
 
 pub(crate) struct TryIterMut<'a> {
-    container: Vec<*mut Vertex>,
-    idx: Option<usize>,
-    _marker: PhantomData<&'a mut Vertex>,
+    pub(crate) container: Vec<*mut Vertex>,
+    pub(crate) idx:       Option<usize>,
+    pub(crate) _marker:   PhantomData<&'a mut Vertex>,
 }
 
 impl<'a> Iterator for TryIterMut<'a> {
     type Item = &'a mut Vertex;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.idx {
-            None => {
-                self.idx = Some(0);
-
-                self.container.first().map(|ptr| unsafe { &mut **ptr })
-            }
-            Some(ref mut idx) => {
-                *idx += 1;
-
-                self.container.get(*idx).map(|ptr| unsafe { &mut **ptr })
-            }
+        if let Some(idx) = &mut self.idx {
+            *idx += 1;
+        } else {
+            self.idx = Some(0);
         }
+
+        unsafe { self.container.get(self.idx.unwrap_unchecked()).map(|ptr| ptr.as_mut_unchecked()) }
     }
 }
 
@@ -256,16 +237,14 @@ pub(crate) enum AllocErrorSrc {
 impl Display for AllocErrorSrc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ArenaAlloc => write!(f, "arena blocks"),
-            Self::ItemInArena(item) => write!(f, "{} {}", item.0, item.1),
+            | Self::ArenaAlloc => write!(f, "arena blocks"),
+            | Self::ItemInArena(item) => write!(f, "{} {}", item.0, item.1),
         }
     }
 }
 
 impl From<ItemInArena> for AllocErrorSrc {
-    fn from(value: ItemInArena) -> Self {
-        Self::ItemInArena(value)
-    }
+    fn from(value: ItemInArena) -> Self { Self::ItemInArena(value) }
 }
 
 #[derive(Debug)]
@@ -282,17 +261,16 @@ impl Display for ArenaItemType {
         use ArenaItemType::{Arc, Vert};
 
         match self {
-            Vert => write!(f, "vertices"),
-            Arc => write!(f, "arcs"),
+            | Vert => write!(f, "vertices"),
+            | Arc => write!(f, "arcs"),
         }
     }
 }
 
 impl GraphBackend for Graph {
-    type Vertex = Vertex;
     type Arc = Arc;
-
     type Error = GraphCreationError;
+    type Vertex = Vertex;
 
     fn new<T: AsPrimitive<usize>>(n: T) -> Result<Graph, Self::Error> {
         let n = n.as_();
@@ -304,8 +282,8 @@ impl GraphBackend for Graph {
                         .map_err(|_| GraphCreationError::AllocError(AllocErrorSrc::ArenaAlloc))?,
                     |mut output, _| {
                         output.push(Rc::try_new(Vertex {
-                            arcs: Vec::new(),
-                            id: String::new(),
+                            arcs:   Vec::new(),
+                            id:     String::new(),
                             fields: FieldBuilder::default(),
                         })?);
 
@@ -318,7 +296,8 @@ impl GraphBackend for Graph {
                         ArenaItemType::Vert,
                     )))
                 })?,
-            id: String::new(),
+            fields:   FieldBuilder::default(),
+            id:       String::new(),
         })
     }
 }
@@ -339,54 +318,42 @@ impl IdExt for Graph {
 }
 
 impl<'a> VertexIterExt<'a, Self> for Graph {
-    type SharedIter = Iter<'a>;
     type ExclusiveIter = IterMut<'a>;
+    type SharedIter = Iter<'a>;
 
-    fn iter(&'a self) -> Self::SharedIter {
-        self.iter()
-    }
+    fn iter(&'a self) -> <Self as VertexIterExt<'a, Self>>::SharedIter { self.iter() }
 
-    fn iter_mut(&'a mut self) -> Self::ExclusiveIter {
+    fn iter_mut(&'a mut self) -> <Self as VertexIterExt<'a, Self>>::ExclusiveIter {
         self.iter_mut()
     }
 }
 
-impl Field<usize, 0> for Vertex {
-    fn get_field<Q>(&self) -> &Q
-    where
-        usize: Borrow<Q>,
-    {
-        todo!()
-    }
-
-    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
-        todo!()
-    }
+#[derive(Error, Debug)]
+enum FieldsExtError {
+    #[error("auxiliary allocation failed: {0}")]
+    AllocFailed(AllocFailureKind),
 }
 
-impl Field<usize, 1> for Vertex {
-    fn get_field<Q>(&self) -> &Q
-    where
-        usize: Borrow<Q>,
-    {
-        todo!()
-    }
-
-    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
-        todo!()
-    }
+impl From<AllocFailureKind> for FieldsExtError {
+    fn from(value: AllocFailureKind) -> Self { Self::AllocFailed(value) }
 }
 
-impl Field<usize, 2> for Vertex {
-    fn get_field<Q>(&self) -> &Q
-    where
-        usize: Borrow<Q>,
-    {
-        todo!()
-    }
+#[derive(Debug)]
+enum AllocFailureKind {
+    NewTypeAllocation(&'static str),
+    NewBucketAllocation(&'static str),
+    NewBucketKeyAllocation(&'static str),
+}
 
-    fn set_field<Q: Into<usize>>(&mut self, other: Q) {
-        todo!()
+impl Display for AllocFailureKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            | Self::NewTypeAllocation(ty) => write!(f, "new type allocation failed: {ty}"),
+            | Self::NewBucketAllocation(ty) =>
+                write!(f, "bucket allocation failed for type: {ty}",),
+            | Self::NewBucketKeyAllocation(ty) =>
+                write!(f, "allocation of container for bucket of types: `{ty}` failed",),
+        }
     }
 }
 
@@ -394,12 +361,12 @@ impl<T, const N: usize> FieldsExt<T, N> for Vertex
 where
     for<'a> T: 'a,
 {
-    type Error = TryReserveError;
+    type Error = FieldsExtError;
 
-    fn chfield_with<'a, Q: 'a, R: Into<T>>(
+    fn chfield_with<'a, Q: 'a, R: Into<T>, E: Into<<Self as FieldsExt<T, N>>::Error>>(
         &mut self,
-        mut function: impl FnMut() -> R,
-    ) -> Result<[&mut Q; N], Self::Error>
+        mut producer: impl FnMut() -> Result<R, E>,
+    ) -> Result<[&mut Q; N], <Self as FieldsExt<T, N>>::Error>
     where
         T: BorrowMut<Q> + 'a,
     {
@@ -423,45 +390,57 @@ where
             output.map(|ty| unsafe { ty.as_mut_unchecked() })
         }
 
-        match self.fields.0.entry(TypeId::of::<T>()) {
-            Entry::Occupied(mut entry) => {
-                let entry = entry.get_mut();
-                let len = entry.len();
-                if len < N {
-                    entry.try_reserve_exact(N)?;
-                    (len..N).for_each(|_| {
-                        entry.push({
-                            let out: Box<dyn Any> = Box::new(function().into());
-
-                            out
-                        });
-                    });
-                }
-
-                Ok(extract_n::<Self, T, Q, N>(entry))
-            }
-            Entry::Vacant(key) => {
-                let entry = key.insert({
-                    let mut entry = Vec::try_with_capacity(N)?;
-                    entry.resize_with(N, || {
-                        let out: Box<dyn Any> = Box::new(function().into());
+        // This doesn't use the `Entry` API because that API uses calls to
+        // allocation-wise fallible functions that panic on failure.
+        if let Some(entry) = self.fields.0.get_mut(&TypeId::of::<T>()) {
+            if entry.len() < N {
+                entry
+                    .try_reserve_exact(N)
+                    .map_err(|_| AllocFailureKind::NewBucketAllocation(type_name::<T>()).into())?;
+                (entry.len()..N).try_for_each(|_| {
+                    entry.push({
+                        let out: Box<dyn Any> = Box::try_new(producer()?.into()).map_err(|_| {
+                            AllocFailureKind::NewTypeAllocation(type_name::<T>()).into()
+                        })?;
 
                         out
                     });
 
-                    entry
+                    Ok(())
+                })?;
+            }
+
+            Ok(extract_n::<Self, T, Q, N>(entry))
+        } else {
+            self.fields
+                .0
+                .try_reserve(1)
+                .map_err(|_| AllocFailureKind::NewBucketKeyAllocation(type_name::<T>()).into())?;
+            self.fields.0.insert(TypeId::of::<T>(), {
+                let mut entry = Vec::try_with_capacity(N)
+                    .map_err(|_| AllocFailureKind::NewBucketAllocation(type_name::<T>()).into())?;
+                let new_ty: Box<T> = Box::try_new(producer()?.into())
+                    .map_err(|_| AllocFailureKind::NewTypeAllocation(type_name::<T>()).into())?;
+                entry.resize_with(N, || {
+                    let out: Box<dyn Any> = new_ty.clone();
+
+                    out
                 });
 
-                Ok(extract_n::<Self, T, Q, N>(entry))
-            }
+                entry
+            });
+            // SAFETY: the key just got inserted above.
+            let entry = unsafe { self.fields.0.get_mut(&TypeId::of::<T>()).unwrap_unchecked() };
+
+            Ok(extract_n::<Self, T, Q, N>(entry))
         }
     }
 }
 
 impl Board for Graph {
+    type ArcId = String;
     type GraphId = String;
     type VertexId = String;
-    type ArcId = String;
 }
 
 pub(crate) mod cmds {}
