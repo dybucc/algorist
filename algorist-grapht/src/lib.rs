@@ -23,12 +23,12 @@ mod tests {
         let mut graph = Graph::new(10)?;
         for vertex in &mut graph {
             eprintln!("initial state");
-            let [a, b, c]: [&mut String; _] = fields_of!(3; String | v in Graph: vertex).unwrap();
+            let [a, b, c]: [&mut String; _] = fields_of!(String; 3 => v in Graph: vertex).unwrap();
             eprintln!("{a}\n{b}\n{c}\n---");
         }
         for vertex in &mut graph {
             eprintln!("modification");
-            let [a, b, c]: [&mut String; _] = fields_of!(3; String | v in Graph: vertex).unwrap();
+            let [a, b, c]: [&mut String; _] = fields_of!(String; 3 => v in Graph: vertex).unwrap();
             a.reserve_exact("Something".len());
             write!(a, "Something").unwrap();
             b.reserve_exact("Something".len());
@@ -38,7 +38,7 @@ mod tests {
         }
         for vertex in &mut graph {
             eprintln!("final state");
-            let [a, b, c]: [&mut String; _] = fields_of!(3; String | v in Graph: vertex).unwrap();
+            let [a, b, c]: [&mut String; _] = fields_of!(String; 3 => v in Graph: vertex).unwrap();
             eprintln!("{a}\n{b}\n{c}\n---");
         }
 

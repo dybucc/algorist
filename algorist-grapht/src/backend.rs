@@ -85,8 +85,8 @@ impl Graph {
         n4: isize,
         piece: NonZeroIsize,
         wrap: isize,
-        directed: isize,
-    ) -> Result<Self, BoardError<Self>> {
+        directed: bool,
+    ) -> Result<Self, BoardError> {
         <Self as Board>::board(n1, n2, n3, n4, piece, wrap, directed)
     }
 
@@ -329,7 +329,7 @@ impl<'a> VertexIterExt<'a, Self> for Graph {
 }
 
 #[derive(Error, Debug)]
-enum FieldsExtError {
+pub(crate) enum FieldsExtError {
     #[error("auxiliary allocation failed: {0}")]
     AllocFailed(AllocFailureKind),
 }
@@ -339,20 +339,19 @@ impl From<AllocFailureKind> for FieldsExtError {
 }
 
 #[derive(Debug)]
-enum AllocFailureKind {
-    NewTypeAllocation(&'static str),
-    NewBucketAllocation(&'static str),
-    NewBucketKeyAllocation(&'static str),
+pub(crate) enum AllocFailureKind {
+    Type(&'static str),
+    Bucket(&'static str),
+    BucketKey(&'static str),
 }
 
 impl Display for AllocFailureKind {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            | Self::NewTypeAllocation(ty) => write!(f, "new type allocation failed: {ty}"),
-            | Self::NewBucketAllocation(ty) =>
-                write!(f, "bucket allocation failed for type: {ty}",),
-            | Self::NewBucketKeyAllocation(ty) =>
-                write!(f, "allocation of container for bucket of types: `{ty}` failed",),
+            | Self::Type(ty) => write!(f, "new type allocation failed: {ty}"),
+            | Self::Bucket(ty) => write!(f, "bucket allocation failed for type: {ty}"),
+            | Self::BucketKey(ty) =>
+                write!(f, "allocation of container for bucket of types: `{ty}` failed"),
         }
     }
 }
@@ -381,55 +380,62 @@ where
                 // SAFETY: all elements `ty` in `entry` are of type `T` by
                 // virtue of hashing from `T`'s `TypeId` to the bucket of
                 // values `ty` of type `T`.
-                output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() }
+                output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() };
             });
 
             // SAFETY: the pointer actually points to the underlying value
-            // behind the `Box<dyn Any>` of the hashmap `entry` is sourced
-            // from, so producing a reference to it is sound.
+            // behind the `Box<dyn Any>` of the hashmap `entry` is sourced from,
+            // so producing a reference to it is sound.
             output.map(|ty| unsafe { ty.as_mut_unchecked() })
         }
 
         // This doesn't use the `Entry` API because that API uses calls to
         // allocation-wise fallible functions that panic on failure.
         if let Some(entry) = self.fields.0.get_mut(&TypeId::of::<T>()) {
-            if entry.len() < N {
-                entry
-                    .try_reserve_exact(N)
-                    .map_err(|_| AllocFailureKind::NewBucketAllocation(type_name::<T>()).into())?;
-                (entry.len()..N).try_for_each(|_| {
+            Ok(extract_n::<Self, T, Q, N>((entry.len()..N).try_fold(
+                {
+                    entry
+                        .try_reserve_exact(N)
+                        .map_err(|_| AllocFailureKind::Bucket(type_name::<T>()))?;
+
+                    entry
+                },
+                |entry, _| {
                     entry.push({
-                        let out: Box<dyn Any> = Box::try_new(producer()?.into()).map_err(|_| {
-                            AllocFailureKind::NewTypeAllocation(type_name::<T>()).into()
-                        })?;
+                        let out: Box<dyn Any> =
+                            Box::try_new(producer().map(Into::into).map_err(Into::into)?)
+                                .map_err(|_| AllocFailureKind::Type(type_name::<T>()))?;
 
                         out
                     });
 
-                    Ok(())
-                })?;
-            }
-
-            Ok(extract_n::<Self, T, Q, N>(entry))
+                    Ok::<_, FieldsExtError>(entry)
+                },
+            )?))
         } else {
             self.fields
                 .0
                 .try_reserve(1)
-                .map_err(|_| AllocFailureKind::NewBucketKeyAllocation(type_name::<T>()).into())?;
-            self.fields.0.insert(TypeId::of::<T>(), {
-                let mut entry = Vec::try_with_capacity(N)
-                    .map_err(|_| AllocFailureKind::NewBucketAllocation(type_name::<T>()).into())?;
-                let new_ty: Box<T> = Box::try_new(producer()?.into())
-                    .map_err(|_| AllocFailureKind::NewTypeAllocation(type_name::<T>()).into())?;
-                entry.resize_with(N, || {
-                    let out: Box<dyn Any> = new_ty.clone();
+                .map_err(|_| AllocFailureKind::BucketKey(type_name::<T>()))?;
+            self.fields.0.insert(
+                TypeId::of::<T>(),
+                (0..N).try_fold(
+                    Vec::try_with_capacity(N)
+                        .map_err(|_| AllocFailureKind::Bucket(type_name::<T>()))?,
+                    |mut entry, _| {
+                        entry.push({
+                            let out: Box<dyn Any> =
+                                Box::try_new(producer().map(Into::into).map_err(Into::into)?)
+                                    .map_err(|_| AllocFailureKind::Type(type_name::<T>()))?;
 
-                    out
-                });
+                            out
+                        });
 
-                entry
-            });
-            // SAFETY: the key just got inserted above.
+                        Ok::<_, FieldsExtError>(entry)
+                    },
+                )?,
+            );
+            // SAFETY: the key just got a bucket inserted above.
             let entry = unsafe { self.fields.0.get_mut(&TypeId::of::<T>()).unwrap_unchecked() };
 
             Ok(extract_n::<Self, T, Q, N>(entry))
