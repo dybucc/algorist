@@ -10,6 +10,7 @@ pub(crate) mod basic {
             ops::ControlFlow,
         };
 
+        use num_traits::AsPrimitive;
         use thiserror::Error;
 
         use crate::{
@@ -267,8 +268,7 @@ pub(crate) mod basic {
 
             write_err!(graph_name, "board(");
             params.iter().try_for_each(|param| Ok(write_err!(graph_name, "{param},")))?;
-            write_err!(graph_name, "{}", if directed { "1" } else { "0" });
-            write_err!(graph_name, ")");
+            write_err!(graph_name, "{})", if directed { "1" } else { "0" });
             graph.set_id(graph_name.as_str());
 
             Ok(())
@@ -282,10 +282,40 @@ pub(crate) mod basic {
 
         type InitState = (Vec<bool>, Vec<usize>, Vec<usize>);
 
-        pub(crate) fn init_state(piece: isize, wrap: isize) -> Result<InitState, InitStateError> {
-            let wrap = todo!();
+        pub(crate) fn init_state(
+            wrap: isize,
+            dimensions: usize,
+        ) -> Result<InitState, InitStateError> {
+            Ok((
+                (0..dimensions)
+                    .fold(
+                        (
+                            Vec::try_with_capacity(dimensions)
+                                .map_err(|_| InitStateError::AuxliaryAllocFailed)?,
+                            wrap.cast_unsigned(),
+                        ),
+                        |(mut should_wrap, wrap_mask), _| {
+                            should_wrap.push((wrap_mask & 1) != 0);
 
-            todo!()
+                            (should_wrap, wrap_mask >> 1)
+                        },
+                    )
+                    .0,
+                Vec::try_with_capacity(dimensions)
+                    .map(|mut out| {
+                        out.resize(dimensions, 0);
+
+                        out
+                    })
+                    .map_err(|_| InitStateError::AuxliaryAllocFailed)?,
+                Vec::try_with_capacity(dimensions + 1)
+                    .map(|mut out| {
+                        out.resize(dimensions, 0);
+
+                        out
+                    })
+                    .map_err(|_| InitStateError::AuxliaryAllocFailed)?,
+            ))
         }
 
         #[derive(Debug, Error)]
@@ -308,11 +338,14 @@ pub(crate) mod basic {
 
         pub(crate) fn fill_arcs<G: GraphBackend>(
             graph: &mut G,
+            component_range: &[usize],
             piece: isize,
             wrap: isize,
             directed: bool,
         ) -> Result<(), FillArcsError> {
-            let (wr, del, sig) = init_state(piece, wrap)?;
+            let (wr, del, sig) = init_state(wrap, component_range.len())?;
+            let piece = piece.unsigned_abs();
+            loop {}
 
             Ok(())
         }
@@ -393,6 +426,54 @@ pub(crate) mod basic {
             fn from(value: FillArcsError) -> Self { todo!() }
         }
 
+        // TODO: finish the below API to allow for more a mask larger than
+        // 32/64-bits to be used for configuring which coordinate component gets
+        // wrapped; currently we're using `isize` for `wrap` in
+        // `Board::board()`.
+
+        #[derive(Debug)]
+        pub(crate) enum WrapBuilderRepr {
+            SpecificComponents(Vec<usize>),
+            AllComponents,
+        }
+
+        #[derive(Debug, Error)]
+        pub(crate) enum WrapBuilderError {
+            #[error("auxiliary allocation failed")]
+            AuxiliaryAlloc,
+        }
+
+        #[derive(Debug, Default)]
+        pub(crate) struct WrapBuilder(pub(crate) Option<WrapBuilderRepr>);
+
+        impl WrapBuilder {
+            fn new<T: Into<Option<impl AsPrimitive<usize>>>>(
+                dimensions: T,
+            ) -> Result<Self, WrapBuilderError> {
+                Ok(Self(if let Some(dims) = dimensions.into() {
+                    Some(WrapBuilderRepr::SpecificComponents(
+                        Vec::try_with_capacity(dims.as_())
+                            .map_err(|_| WrapBuilderError::AuxiliaryAlloc)?,
+                    ))
+                } else {
+                    Some(WrapBuilderRepr::AllComponents)
+                }))
+            }
+
+            fn add_wrapping(
+                &mut self,
+                component: impl AsPrimitive<usize>,
+            ) -> Result<&mut Self, WrapBuilderError> {
+                if let Some(inner) = &mut self.0 {
+                    todo!()
+                } else {
+                    todo!()
+                }
+
+                Ok(self)
+            }
+        }
+
         pub(crate) trait Board:
             GraphBackend<Vertex: IdExt<Id = <Self as Board>::VertexId> + FieldsExt<usize, 3>>
             + for<'a> VertexIterExt<'a, Self>
@@ -419,7 +500,7 @@ pub(crate) mod basic {
                 let component_ranges = normalize_board_size(&mut n1, &mut n2, &mut n3, &mut n4)?;
                 let mut graph: Self = build_graph(&component_ranges)?;
                 name_graph(&mut graph, &[n1, n2, n3, n4, piece.get(), wrap], directed)?;
-                fill_arcs(&mut graph, piece.get(), wrap, directed)?;
+                fill_arcs(&mut graph, &component_ranges, piece.get(), wrap, directed)?;
 
                 Ok(graph)
             }
