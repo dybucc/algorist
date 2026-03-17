@@ -1,3 +1,5 @@
+max_width = 80
+tab_spaces = 2
 use_small_heuristics = "Max"
 
 # the following are unstable
@@ -7,7 +9,7 @@ doc_comment_code_block_width = 80
 comment_width = 80
 normalize_comments = true
 normalize_doc_attributes = true
-format_strings = false
+format_strings = true
 
 format_macro_matchers = true
 hex_literal_case = "Upper"
