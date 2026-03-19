@@ -230,21 +230,19 @@ pub(crate) enum NamingError {
   StreamWrite,
 }
 
-pub(crate) fn name_graph<GId, G: GraphBackend + IdExt<Id = GId>>(
+pub(crate) fn name_graph<G: GraphBackend + IdExt>(
   graph: &mut G,
   params: &[isize],
   directed: bool,
 ) -> Result<(), NamingError>
 where
-  for<'a> &'a str: Into<GId>,
+  for<'a> &'a str: Into<<G as IdExt>::Id>,
 {
-  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
-
   // The string must account for `board()`, however as many digits each of the
   // parameters has (considering `ilog10()` rounds downward,) and for both the
   // commas after each of the parameters (other than the `directed` parameter,)
   // and the extra `directed` boolean parameter.
-  let mut graph_name = String::try_with_capacity(
+  let mut graph_id = String::try_with_capacity(
     "board()".len()
       + params
         .iter()
@@ -264,15 +262,15 @@ where
   .map_err(|_| NamingError::AuxiliaryAlloc)?;
 
   macro_rules! write_err {
-    ($buf:expr, $($args:expr),+) => {{
-      write!($buf, $($args),+).map_err(|_| { NamingError::StreamWrite })?
+    ($($args:expr),+) => {{
+      write!(graph_id, $($args),+).map_err(|_| { NamingError::StreamWrite })
     }};
   }
 
-  write_err!(graph_name, "board(");
-  params.iter().try_for_each(|param| Ok(write_err!(graph_name, "{param},")))?;
-  write_err!(graph_name, "{})", if directed { "1" } else { "0" });
-  graph.set_id(graph_name.as_str());
+  write_err!("board(")?;
+  params.iter().try_for_each(|param| write_err!("{param},"))?;
+  write_err!("{})", if directed { "1" } else { "0" })?;
+  graph.set_id(graph_id.as_str());
 
   Ok(())
 }
@@ -343,6 +341,11 @@ pub(crate) fn fill_arcs<G: GraphBackend>(
 ) -> Result<(), FillArcsError> {
   let ((wr, del, sig), piece) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
+  (0..component_range.len()).try_fold((del, sig), |(mut del, mut sig), _| {
+    del.iter().zip(sig).rev();
+
+    ControlFlow::Continue((del, sig))
+  });
 
   Ok(())
 }
@@ -416,17 +419,16 @@ impl From<NamingError> for BoardError {
   fn from(value: NamingError) -> Self { Self::GraphNaming }
 }
 
-// TODO: get the impl done once the implementation details of
-// `fill_arcs()` are done
+// TODO: get the impl done once the implementation details of `fill_arcs()` are
+// done
 
 impl From<FillArcsError> for BoardError {
   fn from(value: FillArcsError) -> Self { todo!() }
 }
 
-// TODO: finish the below API to allow for more a mask larger than
-// 32/64-bits to be used for configuring which coordinate component gets
-// wrapped; currently we're using `isize` for `wrap` in
-// `Board::board()`.
+// TODO: finish the below API to allow for more a mask larger than 32/64-bits to
+// be used for configuring which coordinate component gets wrapped; currently
+// we're using `isize` for `wrap` in `Board::board()`.
 
 #[derive(Debug)]
 pub(crate) enum WrapBuilderRepr {

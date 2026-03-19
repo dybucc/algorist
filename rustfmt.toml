@@ -2,7 +2,7 @@ max_width = 80
 tab_spaces = 2
 use_small_heuristics = "Max"
 
-# the following are unstable
+# the following don't always work
 wrap_comments = true
 format_code_in_doc_comments = true
 doc_comment_code_block_width = 80
