@@ -183,8 +183,8 @@ where
                 | 0 => *x = *component,
                 | 1 => *y = *component,
                 | 2 => *z = *component,
-                // SAFETY: here `idx` only ever takes on
-                // values in the range `0..3`.
+                // SAFETY: here `idx` only ever takes on values in the range
+                // `0..3`.
                 | _ => unsafe { hint::unreachable_unchecked() },
               }
 
@@ -339,13 +339,27 @@ pub(crate) fn fill_arcs<G: GraphBackend>(
   wrap: isize,
   directed: bool,
 ) -> Result<(), FillArcsError> {
-  let ((wr, del, sig), piece) =
-    (init_state(wrap, component_range.len())?, piece.unsigned_abs());
-  (0..component_range.len()).try_fold((del, sig), |(mut del, mut sig), _| {
-    del.iter().zip(sig).rev();
+  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
 
-    ControlFlow::Continue((del, sig))
-  });
+  let ((wr, mut del, mut sig), piece) =
+    (init_state(wrap, component_range.len())?, piece.unsigned_abs());
+  loop {
+    if del
+      .iter_mut()
+      .zip(sig.iter().copied())
+      .rev()
+      .try_for_each(|(d, s)| {
+        if s + (*d + 1).saturating_pow(2) > piece {
+          ControlFlow::Continue(*d = 0)
+        } else {
+          ControlFlow::Break(())
+        }
+      })
+      .is_continue()
+    {
+      break;
+    }
+  }
 
   Ok(())
 }
