@@ -290,6 +290,19 @@ pub(crate) fn init_state(
   // TODO: handle the case where `wrap` is negative by going straight for a full
   // wrapping vector; Possibly implemented in terms of an enumeration where it's
   // either a vector of booleans or a single boolean.
+
+  macro_rules! produce_vector {
+    ($target_len:expr) => {{
+      Vec::try_with_capacity($target_len)
+        .map(|mut out| {
+          out.resize($target_len, 0);
+
+          out
+        })
+        .map_err(|_| InitStateError::AuxliaryAlloc)?
+    }};
+  }
+
   Ok((
     (0..dimensions)
       .fold(
@@ -299,26 +312,16 @@ pub(crate) fn init_state(
           wrap.cast_unsigned(),
         ),
         |(mut should_wrap, wrap_mask), _| {
-          should_wrap.push((wrap_mask & 1) != 0);
-
-          (should_wrap, wrap_mask >> 1)
+          (
+            should_wrap.push((wrap_mask & 1) != 0),
+            (should_wrap, wrap_mask >> 1),
+          )
+            .1
         },
       )
       .0,
-    Vec::try_with_capacity(dimensions)
-      .map(|mut out| {
-        out.resize(dimensions, 0);
-
-        out
-      })
-      .map_err(|_| InitStateError::AuxliaryAlloc)?,
-    Vec::try_with_capacity(dimensions + 1)
-      .map(|mut out| {
-        out.resize(dimensions, 0);
-
-        out
-      })
-      .map_err(|_| InitStateError::AuxliaryAlloc)?,
+    produce_vector!(dimensions),
+    produce_vector!(dimensions + 1),
   ))
 }
 
@@ -339,27 +342,18 @@ pub(crate) fn fill_arcs<G: GraphBackend>(
   wrap: isize,
   directed: bool,
 ) -> Result<(), FillArcsError> {
-  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
-
   let ((wr, mut del, mut sig), piece) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
-  loop {
-    if del
-      .iter_mut()
-      .zip(sig.iter().copied())
-      .rev()
-      .try_for_each(|(d, s)| {
-        if s + (*d + 1).saturating_pow(2) > piece {
-          ControlFlow::Continue(*d = 0)
-        } else {
-          ControlFlow::Break(())
-        }
-      })
-      .is_continue()
-    {
-      break;
-    }
-  }
+  while let ControlFlow::Break(target_del) =
+    del.iter_mut().zip(sig.iter_mut().peek).rev().try_for_each(|(d, s)| {
+      if *s + (*d + 1).saturating_pow(2) > piece {
+        (*d = 0, ControlFlow::Continue(()))
+      } else {
+        (*d += 1, ControlFlow::Break(&*d))
+      }
+      .1
+    })
+  {}
 
   Ok(())
 }
