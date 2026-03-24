@@ -14,7 +14,7 @@ pub(crate) mod routines;
 
 // TODO: report to the rust github that the Error associated type fails to
 // resolve when implementing the trait on a specific type only when using a
-// `where` clause and not straightforward supertrait syntax.
+// `where` clause and not supertrait syntactic sugar.
 
 pub(crate) trait GraphBackend: Sized {
   type Vertex;
@@ -40,6 +40,11 @@ pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
   fn iter_mut(&'a mut self) -> <Self as VertexIterExt<'a, G>>::ExclusiveIter;
 }
 
+pub(crate) trait ArcAddExt<'a, G: GraphBackend + 'a>:
+  VertexIterExt<'a, G>
+{
+}
+
 pub(crate) trait IdExt {
   type Id;
 
@@ -51,8 +56,9 @@ pub(crate) trait IdExt {
     &mut self,
     other_fn: impl FnOnce() -> T,
   );
+
   fn set_id<T: Into<<Self as IdExt>::Id>>(&mut self, other: T) {
-    self.set_id_with(|| other.into());
+    self.set_id_with(|| other);
   }
 }
 

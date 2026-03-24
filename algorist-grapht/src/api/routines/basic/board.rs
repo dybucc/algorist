@@ -6,7 +6,7 @@ use std::{
   fmt::{self, Debug, Display, Formatter, Write as _},
   hint,
   num::NonZeroIsize,
-  ops::ControlFlow,
+  ops::{ControlFlow, Not},
 };
 
 use num_traits::AsPrimitive;
@@ -166,7 +166,7 @@ where
             // indices `0..3` point at the "last" three components, because
             // `name_state` iterates from left to right in the following
             // sequence: (a, b, ..., beta, alpha). The true "first" three
-            // components would be the last three in this iterator, but for now,
+            // components would be the last three in this iterator. For now,
             // we're only reproducing the same behavior as the one in the
             // original GraphBase.
             (..3).contains(&idx).then_some(()).iter().try_for_each(|()| {
@@ -202,16 +202,15 @@ where
       name.clear();
       name_state
         .iter_mut()
-        .enumerate()
+        .zip(component_range)
         .rev()
-        .try_for_each(|(component_num, component)| {
-          if *component + 1 == component_range[component_num] {
-            ControlFlow::Continue(())
+        .try_for_each(|(component, ref_component)| {
+          if *component + 1 == *ref_component {
+            (*component = 0, ControlFlow::Continue(()))
           } else {
-            *component += 1;
-
-            ControlFlow::Break(())
+            (*component += 1, ControlFlow::Break(()))
           }
+          .1
         })
         .into_value();
 
@@ -263,7 +262,7 @@ where
 
   macro_rules! write_err {
     ($($args:expr),+) => {{
-      write!(graph_id, $($args),+).map_err(|_| { NamingError::StreamWrite })
+      write!(graph_id, $($args),+).map_err(|_| NamingError::StreamWrite)
     }};
   }
 
@@ -277,11 +276,26 @@ where
 
 #[derive(Debug, Error)]
 pub(crate) enum InitStateError {
-  #[error("auxilary allocation failed")]
-  AuxliaryAlloc,
+  #[error(
+    "failed to allocate auxiliary memory for {} elements for {}",
+    .1,
+    match .0 {
+      InitStateErrorSrc::Wrapping => "coordinate wrapping purposes",
+      InitStateErrorSrc::Motions => "coordinate state-saving purposes",
+      InitStateErrorSrc::Change => "coordinate change purposes",
+    }
+  )]
+  AuxiliaryAlloc(InitStateErrorSrc, usize),
 }
 
-type InitState = (Vec<bool>, Vec<usize>, Vec<usize>);
+#[derive(Debug)]
+pub(crate) enum InitStateErrorSrc {
+  Wrapping,
+  Motions,
+  Change,
+}
+
+pub(crate) type InitState = (Vec<bool>, Vec<usize>, Vec<usize>);
 
 pub(crate) fn init_state(
   wrap: isize,
@@ -291,15 +305,17 @@ pub(crate) fn init_state(
   // wrapping vector; Possibly implemented in terms of an enumeration where it's
   // either a vector of booleans or a single boolean.
 
-  macro_rules! produce_vector {
-    ($target_len:expr) => {{
+  macro_rules! gen_vector {
+    ($target_len:expr => $var:tt) => {{
       Vec::try_with_capacity($target_len)
         .map(|mut out| {
           out.resize($target_len, 0);
 
           out
         })
-        .map_err(|_| InitStateError::AuxliaryAlloc)?
+        .map_err(|_| {
+          InitStateError::AuxiliaryAlloc(InitStateErrorSrc::$var, $target_len)
+        })?
     }};
   }
 
@@ -307,8 +323,12 @@ pub(crate) fn init_state(
     (0..dimensions)
       .fold(
         (
-          Vec::try_with_capacity(dimensions)
-            .map_err(|_| InitStateError::AuxliaryAlloc)?,
+          Vec::try_with_capacity(dimensions).map_err(|_| {
+            InitStateError::AuxiliaryAlloc(
+              InitStateErrorSrc::Wrapping,
+              dimensions,
+            )
+          })?,
           wrap.cast_unsigned(),
         ),
         |(mut should_wrap, wrap_mask), _| {
@@ -320,22 +340,51 @@ pub(crate) fn init_state(
         },
       )
       .0,
-    produce_vector!(dimensions),
-    produce_vector!(dimensions + 1),
+    gen_vector!(dimensions => Motions),
+    gen_vector!(dimensions + 1 => Change),
   ))
 }
 
 #[derive(Debug, Error)]
+pub(crate) enum GenMovesError {}
+
+pub(crate) fn gen_moves(directed: bool) -> Result<(), GenMovesError> {
+  todo!();
+
+  Ok(())
+}
+
+#[derive(Debug, Error)]
 pub(crate) enum FillArcsError {
-  #[error(transparent)]
-  InitState(InitStateError),
+  #[error(
+    "failed to initialize auxiliary allocations to determine set of possible \
+     board positions for {} elements for `{}`",
+     .1,
+     match .0 {
+       InitStateErrorSrc::Wrapping => "coordinate wrapping purposes",
+       InitStateErrorSrc::Motions => "coordinate state-saving purposes",
+       InitStateErrorSrc::Change => "coordinate change purposes",
+     }
+  )]
+  InitState(InitStateErrorSrc, usize),
+  #[error("failed to perform auxiliary allocation")]
+  AuxiliaryAlloc,
 }
 
 impl From<InitStateError> for FillArcsError {
-  fn from(value: InitStateError) -> Self { Self::InitState(value) }
+  fn from(value: InitStateError) -> Self {
+    match value {
+      | InitStateError::AuxiliaryAlloc(src, allocation_size) =>
+        Self::InitState(src, allocation_size),
+    }
+  }
 }
 
-pub(crate) fn fill_arcs<G: GraphBackend>(
+impl From<GenMovesError> for FillArcsError {
+  fn from(value: GenMovesError) -> Self { todo!() }
+}
+
+pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
   graph: &mut G,
   component_range: &[usize],
   piece: isize,
@@ -344,16 +393,80 @@ pub(crate) fn fill_arcs<G: GraphBackend>(
 ) -> Result<(), FillArcsError> {
   let ((wr, mut del, mut sig), piece) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
-  while let ControlFlow::Break(target_del) =
-    del.iter_mut().zip(sig.iter_mut().peek).rev().try_for_each(|(d, s)| {
-      if *s + (*d + 1).saturating_pow(2) > piece {
+  while let ControlFlow::Break((i, d)) = del
+    .iter_mut()
+    .zip(sig.iter().copied().enumerate().take(component_range.len()))
+    .rev()
+    .try_for_each(|(d, (i, s))| {
+      if s + (*d + 1).saturating_pow(2) > piece {
         (*d = 0, ControlFlow::Continue(()))
       } else {
-        (*d += 1, ControlFlow::Break(&*d))
+        (*d += 1, ControlFlow::Break((i, &*d)))
       }
       .1
     })
-  {}
+  {
+    // SAFETY: `i` is always within bounds by virtue of being a result of an
+    // `enumerate()` call on the `sig` collection's iterator. `i + 1` is always
+    // within bounds by virtue of `sig` always being one element larger than
+    // `del`, and the above iteration being dominated by the latter (see the
+    // `take()` call on the iterator produced by `sig` and the allocation sizes
+    // in the `init_state()` routine.)
+
+    let ((), target_sig) = unsafe {
+      (
+        *sig.get_unchecked_mut(i + 1) =
+          sig.get_unchecked(i) + d.saturating_pow(2),
+        *sig.get_unchecked(i + 1),
+      )
+    };
+    let ((), ref_elem) = unsafe {
+      (*sig.get_unchecked_mut(i + 1) = target_sig, *sig.get_unchecked(i))
+    };
+    // +2 here to account for (1) element indices being 0-indexed and the
+    // `skip()` method working on a 1-indexed basis, and (2) the fact that only
+    // elements coming right at after the index we just modified above should be
+    // affected (i.e. the change should only carry down elements coming *after*
+    // the element at index `i + 1`.)
+    sig.iter_mut().skip(i + 2).for_each(|s| *s = ref_elem);
+    // NOTE: this may not be reordered. Do not attempt to reorder this because
+    // last line's iteration seems like it could be skipped. Last line's
+    // iteration's side effects on the `sig` collection are key, irrespective of
+    // whether the carried through value thus far (i.e. the solution to `del[0]
+    // + del[1] + ... + del[d - 1] = p` for all non-zero `del` elements) turns
+    // out to actually yield a solution for `p`.
+    (target_sig < piece).not().then_some(()).iter().try_for_each(|()| {
+      graph.iter_mut().try_fold(
+        Vec::try_with_capacity(component_range.len())
+          .map(|mut out| {
+            out.resize(component_range.len(), 0);
+
+            out
+          })
+          .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
+        |mut component_state, vertex| {
+          gen_moves(directed)?;
+          component_state
+            .iter_mut()
+            .zip(component_range)
+            .rev()
+            .try_for_each(|(x, max_x)| {
+              if *x + 1 == *max_x {
+                (*x = 0, ControlFlow::Continue(()))
+              } else {
+                (*x += 1, ControlFlow::Break(()))
+              }
+              .1
+            })
+            .into_value();
+
+          Ok::<_, FillArcsError>(component_state)
+        },
+      )?;
+
+      Ok::<_, FillArcsError>(())
+    })?;
+  }
 
   Ok(())
 }
@@ -424,7 +537,7 @@ impl From<BuildGraphError> for BoardError {
 }
 
 impl From<NamingError> for BoardError {
-  fn from(value: NamingError) -> Self { Self::GraphNaming }
+  fn from(_: NamingError) -> Self { Self::GraphNaming }
 }
 
 // TODO: get the impl done once the implementation details of `fill_arcs()` are
@@ -514,8 +627,12 @@ where
   }
 
   fn complete() {}
+
   fn transitive() {}
+
   fn empty() {}
+
   fn circuit() {}
+
   fn cycle() {}
 }
