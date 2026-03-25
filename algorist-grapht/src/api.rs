@@ -1,6 +1,7 @@
 use std::{
   borrow::{Borrow, BorrowMut},
   error::Error,
+  hint,
 };
 
 use num_traits::AsPrimitive;
@@ -25,11 +26,6 @@ pub(crate) trait GraphBackend: Sized {
   fn new<T: AsPrimitive<usize>>(
     n: T,
   ) -> Result<Self, <Self as GraphBackend>::Error>;
-
-  fn cmd_mut<T: CommandMut<U, Self>, U>(&mut self, cmd: T) -> U {
-    cmd.execute(self)
-  }
-  fn cmd<T: Command<U, Self>, U>(&self, cmd: T) -> U { cmd.execute(self) }
 }
 
 pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
@@ -40,9 +36,37 @@ pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
   fn iter_mut(&'a mut self) -> <Self as VertexIterExt<'a, G>>::ExclusiveIter;
 }
 
-pub(crate) trait ArcAddExt<'a, G: GraphBackend + 'a>:
-  VertexIterExt<'a, G>
-{
+// NOTE: the order of iteration on the implementation of `VertexIterExt` is the
+// one used for the indices in the default backend's implementation of
+// `ArcAddExt`. That's the reason why it's always a `usize`. Right now, the
+// implementation uses the potentially costly `count()` method on the returned
+// iterator whenever it requires access to the indices of vertices in a graph,
+// but compile-time reflection could improve that if the `TypeId` of the
+// returned iterator could be determined to implement `ExactSizeIterator`; that
+// should allow calling `len()` at the start of iteration, which should yield
+// all elemnts about to be iterated over.
+pub(crate) trait ArcAddExt {
+  type Error: Error;
+
+  fn new_arc(
+    &mut self,
+    src: usize,
+    dst: usize,
+  ) -> Result<(), <Self as ArcAddExt>::Error>;
+
+  fn new_edge(
+    &mut self,
+    one: usize,
+    other: usize,
+  ) -> Result<(), <Self as ArcAddExt>::Error> {
+    // SAFETY: `i` is only ever one of 0 or 1 by virtue of the range being over
+    // 0..2.
+    (0..2).try_for_each(|i| match i {
+      | 0 => self.new_arc(one, other),
+      | 1 => self.new_arc(other, one),
+      | _ => unsafe { hint::unreachable_unchecked() },
+    })
+  }
 }
 
 pub(crate) trait IdExt {
@@ -87,12 +111,4 @@ pub(crate) trait FieldsExt<T, const N: usize> {
   ) -> Result<[&mut Q; N], <Self as FieldsExt<T, N>>::Error>
   where
     T: BorrowMut<Q> + 'a;
-}
-
-pub(crate) trait Command<T, U: GraphBackend> {
-  fn execute(self, graph: &U) -> T;
-}
-
-pub(crate) trait CommandMut<T, U: GraphBackend> {
-  fn execute(self, graph: &mut U) -> T;
 }

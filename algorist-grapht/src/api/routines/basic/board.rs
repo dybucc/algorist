@@ -1,5 +1,6 @@
 use std::{
-  alloc::AllocError,
+  alloc::{AllocError, Allocator, Global},
+  any::Any,
   cmp::Ordering,
   collections::TryReserveError,
   error::Error,
@@ -348,7 +349,12 @@ pub(crate) fn init_state(
 #[derive(Debug, Error)]
 pub(crate) enum GenMovesError {}
 
-pub(crate) fn gen_moves(directed: bool) -> Result<(), GenMovesError> {
+pub(crate) fn gen_moves<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
+  vertex: usize,
+  buf: &mut [usize],
+  component_state: &[usize],
+  directed: bool,
+) -> Result<(), GenMovesError> {
   todo!();
 
   Ok(())
@@ -436,17 +442,40 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     // + del[1] + ... + del[d - 1] = p` for all non-zero `del` elements) turns
     // out to actually yield a solution for `p`.
     (target_sig < piece).not().then_some(()).iter().try_for_each(|()| {
-      graph.iter_mut().try_fold(
-        Vec::try_with_capacity(component_range.len())
-          .map(|mut out| {
-            out.resize(component_range.len(), 0);
+      (0..graph.iter().count()).try_fold(
+        (
+          Vec::try_with_capacity(component_range.len())
+            .map(|mut out| {
+              out.resize(component_range.len(), 0);
 
-            out
-          })
-          .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
-        |mut component_state, vertex| {
-          gen_moves(directed)?;
-          component_state
+              out
+            })
+            .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
+          Vec::try_with_capacity(component_range.len())
+            .map(|mut out| {
+              out.resize(component_range.len(), 0);
+
+              out
+            })
+            .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
+        ),
+        |(mut current_state, mut post_state), vertex_idx| {
+          // `post_state` here serves the purpose of a buffer that holds the
+          // coordinates of `current_state` during move generation within
+          // `gen_moves()`.
+          post_state
+            .iter_mut()
+            .zip(
+              current_state
+                .iter()
+                .zip(del.iter())
+                .map(|(component, change)| component + change),
+            )
+            .for_each(|(post_move, pre_move)| *post_move = pre_move);
+          gen_moves::<G>(
+            vertex_idx, &mut post_state, &current_state, directed,
+          )?;
+          current_state
             .iter_mut()
             .zip(component_range)
             .rev()
@@ -460,7 +489,7 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
             })
             .into_value();
 
-          Ok::<_, FillArcsError>(component_state)
+          Ok::<_, FillArcsError>((current_state, post_state))
         },
       )?;
 

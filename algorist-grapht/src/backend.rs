@@ -2,6 +2,7 @@ use std::{
   alloc::AllocError,
   any::{self, Any, TypeId},
   borrow::{Borrow, BorrowMut},
+  debug_assert_matches,
   fmt::{Display, Formatter},
   marker::PhantomData,
   num::NonZeroIsize,
@@ -14,6 +15,7 @@ use thiserror::Error;
 
 use crate::{
   api::{
+    ArcAddExt,
     FieldsExt,
     GraphBackend,
     IdExt,
@@ -33,6 +35,24 @@ pub(crate) struct Arc {
 impl PartialEq for Arc {
   fn eq(&self, other: &Self) -> bool {
     matches!((&self.tip, &other.tip), (Some(tip1), Some(tip2)) if Rc::ptr_eq(tip1, tip2))
+  }
+}
+
+impl IdExt for Arc {
+  type Id = String;
+
+  fn get_id<T: ?Sized>(&self) -> &T
+  where
+    <Self as IdExt>::Id: Borrow<T>,
+  {
+    self.id.borrow()
+  }
+
+  fn set_id_with<T: Into<<Self as IdExt>::Id>>(
+    &mut self,
+    other_fn: impl FnOnce() -> T,
+  ) {
+    self.id = other_fn().into();
   }
 }
 
@@ -341,6 +361,61 @@ impl<'a> VertexIterExt<'a, Self> for Graph {
     &'a mut self,
   ) -> <Self as VertexIterExt<'a, Self>>::ExclusiveIter {
     self.iter_mut()
+  }
+}
+
+#[derive(Debug, Error)]
+pub(crate) enum ArcAddError {
+  #[error(
+    "auxiliary memory allocation failed while {}",
+    match .0 {
+      AllocFailureSrc::ArcCreation => "creating new arc",
+    }
+  )]
+  AuxiliaryAlloc(AllocFailureSrc),
+}
+
+#[derive(Debug)]
+pub(crate) enum AllocFailureSrc {
+  ArcCreation,
+}
+
+impl ArcAddExt for Graph {
+  type Error = ArcAddError;
+
+  fn new_arc(
+    &mut self,
+    src: usize,
+    dst: usize,
+  ) -> Result<(), <Self as ArcAddExt>::Error> {
+    debug_assert_matches!(
+      (
+        (0..self.vertices.len()).contains(src.borrow()),
+        (0..self.vertices.len()).contains(dst.borrow())
+      ),
+      (true, true)
+    );
+    // SAFETY: the only place from which this routine gets called are the traits
+    // implementing graphbase functionality, which themselves only run in debug
+    // until they work. On those runs, the above assertion should perform serve
+    // as bounds checking.
+    let (one, other) = unsafe {
+      (
+        Rc::as_ptr(self.vertices.get_unchecked(*src.borrow())).cast_mut(),
+        self.vertices.get_unchecked(*dst.borrow()),
+      )
+    };
+    let arc = Arc {
+      tip:    Rc::clone(other).into(),
+      fields: FieldBuilder::default(),
+      id:     String::new(),
+    };
+    unsafe { &mut (*one).arcs }
+      .try_reserve(1)
+      .map_err(|_| ArcAddError::AuxiliaryAlloc(AllocFailureSrc::ArcCreation))?;
+    unsafe { &mut (*one).arcs }.push(arc.into());
+
+    Ok(())
   }
 }
 
