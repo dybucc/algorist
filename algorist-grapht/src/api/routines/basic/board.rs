@@ -1,6 +1,5 @@
 use std::{
-  alloc::{AllocError, Allocator, Global},
-  any::Any,
+  alloc::AllocError,
   cmp::Ordering,
   collections::TryReserveError,
   error::Error,
@@ -42,32 +41,35 @@ pub(crate) fn normalize_board_size(
         Vec::try_with_capacity(4)?,
         |mut components, (component_num, &component)| match component.cmp(&0) {
           | Ordering::Less | Ordering::Equal if component_num == 0 =>
-            ControlFlow::Break(Ok((0..2).fold(components, |mut output, _| {
-              output.push(8);
-
-              output
-            }))),
-          | Ordering::Less => ControlFlow::Break({
-            components.clear();
-
-            components.try_reserve_exact(component.unsigned_abs()).map(|()| {
-              [n1, n2, n3]
-                .into_iter()
-                .take(component_num)
-                .cycle()
-                .take(component.unsigned_abs())
-                .map(isize::cast_unsigned)
-                .collect_into(&mut components);
-
-              components
-            })
-          }),
+            ControlFlow::Break(Ok(
+              (0..2)
+                .fold(components, |mut output, _| (output.push(8), output).1),
+            )),
+          | Ordering::Less => ControlFlow::Break(
+            (
+              components.clear(),
+              components.try_reserve_exact(component.unsigned_abs()).map(
+                |()| {
+                  (
+                    _ = [n1, n2, n3]
+                      .into_iter()
+                      .take(component_num)
+                      .cycle()
+                      .take(component.unsigned_abs())
+                      .map(isize::cast_unsigned)
+                      .collect_into(&mut components),
+                    components,
+                  )
+                    .1
+                },
+              ),
+            )
+              .1,
+          ),
           | Ordering::Equal => ControlFlow::Break(Ok(components)),
-          | Ordering::Greater => ControlFlow::Continue({
-            components.push(component.cast_unsigned());
-
-            components
-          }),
+          | Ordering::Greater => ControlFlow::Continue(
+            (components.push(component.cast_unsigned()), components).1,
+          ),
         },
       )
       .map_continue(Ok)
@@ -296,7 +298,7 @@ pub(crate) enum InitStateErrorSrc {
   Change,
 }
 
-pub(crate) type InitState = (Vec<bool>, Vec<usize>, Vec<usize>);
+pub(crate) type InitState = (Vec<bool>, Vec<isize>, Vec<usize>);
 
 pub(crate) fn init_state(
   wrap: isize,
@@ -306,7 +308,7 @@ pub(crate) fn init_state(
   // wrapping vector; Possibly implemented in terms of an enumeration where it's
   // either a vector of booleans or a single boolean.
 
-  macro_rules! gen_vector {
+  macro_rules! gen_vec {
     ($target_len:expr => $var:tt) => {{
       Vec::try_with_capacity($target_len)
         .map(|mut out| {
@@ -341,23 +343,40 @@ pub(crate) fn init_state(
         },
       )
       .0,
-    gen_vector!(dimensions => Motions),
-    gen_vector!(dimensions + 1 => Change),
+    gen_vec!(dimensions => Motions),
+    gen_vec!(dimensions + 1 => Change),
   ))
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum GenMovesError {}
 
-pub(crate) fn gen_moves<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
+pub(crate) fn gen_moves<G: GraphBackend>(
+  graph: &mut G,
   vertex: usize,
-  buf: &mut [usize],
-  component_state: &[usize],
+  current_state: &mut [isize],
+  prior_state: &[isize],
+  component_range: &[usize],
+  wrap: &[bool],
   directed: bool,
 ) -> Result<(), GenMovesError> {
-  todo!();
+  // The below cast roundtrips will not cause overflow because of the same
+  // reasons as outlined in `fill_arcs()`.
+  (0..usize::MAX).try_for_each(|weight| {
+    current_state
+      .iter_mut()
+      .zip(component_range.iter().map(|&range| range.cast_signed()).zip(wrap))
+      .try_for_each(|(component, (max_component, &should_wrap))| {
+        (*component >= max_component && should_wrap).then(|| {
+          (0..*component)
+            .rev()
+            .step_by(max_component.cast_unsigned())
+            .for_each(|_| *component -= max_component);
+        })
+      });
 
-  Ok(())
+    Ok(())
+  })
 }
 
 #[derive(Debug, Error)]
@@ -386,6 +405,8 @@ impl From<InitStateError> for FillArcsError {
   }
 }
 
+// TODO: implement this once the `gen_moves()` routine is done.
+
 impl From<GenMovesError> for FillArcsError {
   fn from(value: GenMovesError) -> Self { todo!() }
 }
@@ -397,14 +418,14 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
   wrap: isize,
   directed: bool,
 ) -> Result<(), FillArcsError> {
-  let ((wr, mut del, mut sig), piece) =
+  let ((wrap, mut del, mut sig), piece_unsigned) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
   while let ControlFlow::Break((i, d)) = del
     .iter_mut()
     .zip(sig.iter().copied().enumerate().take(component_range.len()))
     .rev()
     .try_for_each(|(d, (i, s))| {
-      if s + (*d + 1).saturating_pow(2) > piece {
+      if s + (*d + 1).saturating_pow(2).cast_unsigned() > piece_unsigned {
         (*d = 0, ControlFlow::Continue(()))
       } else {
         (*d += 1, ControlFlow::Break((i, &*d)))
@@ -422,7 +443,7 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     let ((), target_sig) = unsafe {
       (
         *sig.get_unchecked_mut(i + 1) =
-          sig.get_unchecked(i) + d.saturating_pow(2),
+          sig.get_unchecked(i) + d.saturating_pow(2) as usize,
         *sig.get_unchecked(i + 1),
       )
     };
@@ -441,60 +462,70 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     // whether the carried through value thus far (i.e. the solution to `del[0]
     // + del[1] + ... + del[d - 1] = p` for all non-zero `del` elements) turns
     // out to actually yield a solution for `p`.
-    (target_sig < piece).not().then_some(()).iter().try_for_each(|()| {
-      (0..graph.iter().count()).try_fold(
-        (
-          Vec::try_with_capacity(component_range.len())
-            .map(|mut out| {
-              out.resize(component_range.len(), 0);
+    (target_sig < piece_unsigned).not().then_some(()).iter().try_for_each(
+      |()| {
+        macro_rules! gen_vec {
+          () => {{
+            Vec::try_with_capacity(component_range.len())
+              .map(|mut out| {
+                (out.resize(component_range.len(), 0_isize), out).1
+              })
+              .map_err(|_| FillArcsError::AuxiliaryAlloc)?
+          }};
+        }
 
-              out
-            })
-            .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
-          Vec::try_with_capacity(component_range.len())
-            .map(|mut out| {
-              out.resize(component_range.len(), 0);
+        (0..graph.iter().count()).try_fold(
+          (gen_vec!(), gen_vec!()),
+          |(mut current_state, mut post_state), vertex_idx| {
+            // `post_state` here serves the purpose of a buffer that holds the
+            // (moved) coordinates of `current_state` during move generation
+            // within `gen_moves()`.
+            post_state
+              .iter_mut()
+              .zip(
+                current_state
+                  .iter()
+                  .zip(del.iter())
+                  .map(|(component, change)| component + change),
+              )
+              .for_each(|(post_move, pre_move)| *post_move = pre_move);
+            gen_moves(
+              graph, vertex_idx, &mut post_state, &current_state,
+              component_range, &wrap, directed,
+            )?;
+            // Casting here won't wrap because all elements from
+            // `component_range` are sourced from `normalize_board_size()`,
+            // which itself takes in `isize` values and can only ever produce
+            // (positive) coordinate ranges that can be denoted by an `isize`.
+            // `unsigned_abs()` on an `isize` would always yield values within a
+            // `usize`'s range; Ergo, this is sound.
+            current_state
+              .iter_mut()
+              .zip(component_range.iter().map(|range| range.cast_signed()))
+              .rev()
+              .try_for_each(|(x, max_x)| {
+                match *x + 1 {
+                  | n if n == max_x => (*x = 0, ControlFlow::Continue(())),
+                  | _ => (*x += 1, ControlFlow::Break(())),
+                }
+                .1
+              })
+              .into_value();
 
-              out
-            })
-            .map_err(|_| FillArcsError::AuxiliaryAlloc)?,
-        ),
-        |(mut current_state, mut post_state), vertex_idx| {
-          // `post_state` here serves the purpose of a buffer that holds the
-          // coordinates of `current_state` during move generation within
-          // `gen_moves()`.
-          post_state
-            .iter_mut()
-            .zip(
-              current_state
-                .iter()
-                .zip(del.iter())
-                .map(|(component, change)| component + change),
-            )
-            .for_each(|(post_move, pre_move)| *post_move = pre_move);
-          gen_moves::<G>(
-            vertex_idx, &mut post_state, &current_state, directed,
-          )?;
-          current_state
-            .iter_mut()
-            .zip(component_range)
-            .rev()
-            .try_for_each(|(x, max_x)| {
-              if *x + 1 == *max_x {
-                (*x = 0, ControlFlow::Continue(()))
-              } else {
-                (*x += 1, ControlFlow::Break(()))
-              }
-              .1
-            })
-            .into_value();
+            Ok::<_, FillArcsError>((current_state, post_state))
+          },
+        )?;
+        del.iter_mut().enumerate().rev().try_fold(
+          usize::default(),
+          |_, (i, d)| match (*d <= 0).then(|| *d = d.wrapping_neg()) {
+            | Some(()) => ControlFlow::Continue(i),
+            | None => ControlFlow::Break(i),
+          },
+        );
 
-          Ok::<_, FillArcsError>((current_state, post_state))
-        },
-      )?;
-
-      Ok::<_, FillArcsError>(())
-    })?;
+        Ok::<_, FillArcsError>(())
+      },
+    )?;
   }
 
   Ok(())

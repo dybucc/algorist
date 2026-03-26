@@ -388,6 +388,8 @@ impl ArcAddExt for Graph {
     src: usize,
     dst: usize,
   ) -> Result<(), <Self as ArcAddExt>::Error> {
+    #![expect(clippy::unit_arg, reason = "Beauty comes at cost.")]
+
     debug_assert_matches!(
       (
         (0..self.vertices.len()).contains(src.borrow()),
@@ -396,26 +398,31 @@ impl ArcAddExt for Graph {
       (true, true)
     );
     // SAFETY: the only place from which this routine gets called are the traits
-    // implementing graphbase functionality, which themselves only run in debug
-    // until they work. On those runs, the above assertion should perform serve
-    // as bounds checking.
-    let (one, other) = unsafe {
-      (
-        Rc::as_ptr(self.vertices.get_unchecked(*src.borrow())).cast_mut(),
-        self.vertices.get_unchecked(*dst.borrow()),
-      )
-    };
-    let arc = Arc {
-      tip:    Rc::clone(other).into(),
-      fields: FieldBuilder::default(),
-      id:     String::new(),
-    };
-    unsafe { &mut (*one).arcs }
-      .try_reserve(1)
-      .map_err(|_| ArcAddError::AuxiliaryAlloc(AllocFailureSrc::ArcCreation))?;
-    unsafe { &mut (*one).arcs }.push(arc.into());
+    // implementing GraphBase functionality, which themselves only run in debug
+    // until they work. On those runs, the above assertion should serve as a
+    // form of bounds checking.
 
-    Ok(())
+    Ok(
+      _ = unsafe {
+        let one =
+          Rc::as_ptr(self.vertices.get_unchecked(*src.borrow())).cast_mut();
+
+        (
+          (*one).arcs.try_reserve(1).map_err(|_| {
+            ArcAddError::AuxiliaryAlloc(AllocFailureSrc::ArcCreation)
+          })?,
+          (*one).arcs.push(
+            Arc {
+              tip:    Rc::clone(self.vertices.get_unchecked(*dst.borrow()))
+                .into(),
+              fields: FieldBuilder::default(),
+              id:     String::new(),
+            }
+            .into(),
+          ),
+        )
+      },
+    )
   }
 }
 

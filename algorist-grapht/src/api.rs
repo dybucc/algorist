@@ -1,4 +1,5 @@
 use std::{
+  assert_matches,
   borrow::{Borrow, BorrowMut},
   error::Error,
   hint,
@@ -60,8 +61,15 @@ pub(crate) trait ArcAddExt {
     other: usize,
   ) -> Result<(), <Self as ArcAddExt>::Error> {
     // SAFETY: `i` is only ever one of 0 or 1 by virtue of the range being over
-    // 0..2.
-    (0..2).try_for_each(|i| match i {
+    // `0..2`. The range is always asserted, so a careless change would trigger
+    // a panic.
+
+    const LO: usize = 0;
+
+    const HI: usize = 2;
+
+    assert_matches!((LO, HI), (0, 2));
+    (LO..HI).try_for_each(|i| match i {
       | 0 => self.new_arc(one, other),
       | 1 => self.new_arc(other, one),
       | _ => unsafe { hint::unreachable_unchecked() },
