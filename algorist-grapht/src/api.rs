@@ -1,8 +1,6 @@
 use std::{
-  assert_matches,
   borrow::{Borrow, BorrowMut},
   error::Error,
-  hint,
 };
 
 use num_traits::AsPrimitive;
@@ -45,7 +43,7 @@ pub(crate) trait VertexIterExt<'a, G: GraphBackend + 'a> {
 // but compile-time reflection could improve that if the `TypeId` of the
 // returned iterator could be determined to implement `ExactSizeIterator`; that
 // should allow calling `len()` at the start of iteration, which should yield
-// all elemnts about to be iterated over.
+// all elements about to be iterated over.
 pub(crate) trait ArcAddExt {
   type Error: Error;
 
@@ -60,20 +58,7 @@ pub(crate) trait ArcAddExt {
     one: usize,
     other: usize,
   ) -> Result<(), <Self as ArcAddExt>::Error> {
-    // SAFETY: `i` is only ever one of 0 or 1 by virtue of the range being over
-    // `0..2`. The range is always asserted, so a careless change would trigger
-    // a panic.
-
-    const LO: usize = 0;
-
-    const HI: usize = 2;
-
-    assert_matches!((LO, HI), (0, 2));
-    (LO..HI).try_for_each(|i| match i {
-      | 0 => self.new_arc(one, other),
-      | 1 => self.new_arc(other, one),
-      | _ => unsafe { hint::unreachable_unchecked() },
-    })
+    (self.new_arc(one, other)?, self.new_arc(other, one)).1
   }
 }
 

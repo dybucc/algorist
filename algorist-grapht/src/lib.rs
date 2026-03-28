@@ -8,9 +8,6 @@ pub(crate) mod api;
 pub(crate) mod backend;
 pub(crate) mod fields;
 pub(crate) mod macros;
-pub(crate) mod private {
-  pub(crate) trait Sealed {}
-}
 
 #[cfg(test)]
 mod tests {

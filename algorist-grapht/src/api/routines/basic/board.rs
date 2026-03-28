@@ -512,16 +512,27 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               })
               .into_value();
 
-            Ok::<_, FillArcsError>((current_state, post_state))
+            ControlFlow::Continue(Ok::<_, FillArcsError>((
+              current_state, post_state,
+            )))
           },
         )?;
-        del.iter_mut().enumerate().rev().try_fold(
-          usize::default(),
-          |_, (i, d)| match (*d <= 0).then(|| *d = d.wrapping_neg()) {
-            | Some(()) => ControlFlow::Continue(i),
-            | None => ControlFlow::Break(i),
-          },
-        );
+        unsafe {
+          (sig.get_unchecked(
+            del
+              .iter_mut()
+              .enumerate()
+              .rev()
+              .try_fold(usize::default(), |_, (i, d)| {
+                match (*d <= 0).then(|| *d = d.wrapping_neg()) {
+                  | Some(()) => ControlFlow::Continue(i),
+                  | None => ControlFlow::Break(i),
+                }
+              })
+              .into_value(),
+          ) == 0)
+            .then(|| {})
+        };
 
         Ok::<_, FillArcsError>(())
       },
