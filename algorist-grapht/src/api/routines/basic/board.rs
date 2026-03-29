@@ -462,15 +462,22 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     // whether the carried through value thus far (i.e. the solution to `del[0]
     // + del[1] + ... + del[d - 1] = p` for all non-zero `del` elements) turns
     // out to actually yield a solution for `p`.
-    (target_sig < piece_unsigned).not().then_some(()).iter().try_for_each(
-      |()| {
+    (target_sig < piece_unsigned)
+      .not()
+      .then_some(())
+      .iter()
+      .try_for_each(|()| {
         macro_rules! gen_vec {
           () => {{
-            Vec::try_with_capacity(component_range.len())
+            match Vec::try_with_capacity(component_range.len())
               .map(|mut out| {
                 (out.resize(component_range.len(), 0_isize), out).1
               })
-              .map_err(|_| FillArcsError::AuxiliaryAlloc)?
+              .map_err(|_| FillArcsError::AuxiliaryAlloc)
+            {
+              | Ok(out) => out,
+              | Err(err) => return ControlFlow::Break(Err(err)),
+            }
           }};
         }
 
@@ -489,16 +496,19 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
                   .map(|(component, change)| component + change),
               )
               .for_each(|(post_move, pre_move)| *post_move = pre_move);
-            gen_moves(
+            match gen_moves(
               graph, vertex_idx, &mut post_state, &current_state,
               component_range, &wrap, directed,
-            )?;
+            ) {
+              | Ok(()) => ControlFlow::Continue(()),
+              | Err(err) => ControlFlow::Break(Err(err.into())),
+            }?;
             // Casting here won't wrap because all elements from
             // `component_range` are sourced from `normalize_board_size()`,
             // which itself takes in `isize` values and can only ever produce
             // (positive) coordinate ranges that can be denoted by an `isize`.
-            // `unsigned_abs()` on an `isize` would always yield values within a
-            // `usize`'s range; Ergo, this is sound.
+            // `unsigned_abs()` on an `isize` would always yield values within
+            // a `usize`'s range; Ergo, this is sound.
             current_state
               .iter_mut()
               .zip(component_range.iter().map(|range| range.cast_signed()))
@@ -512,14 +522,12 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               })
               .into_value();
 
-            ControlFlow::Continue(Ok::<_, FillArcsError>((
-              current_state, post_state,
-            )))
+            ControlFlow::Continue((current_state, post_state))
           },
         )?;
         unsafe {
-          (sig.get_unchecked(
-            del
+          if let (sig_element, index) = {
+            let index = del
               .iter_mut()
               .enumerate()
               .rev()
@@ -529,14 +537,21 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
                   | None => ControlFlow::Break(i),
                 }
               })
-              .into_value(),
-          ) == 0)
-            .then(|| {})
-        };
+              .into_value();
 
-        Ok::<_, FillArcsError>(())
-      },
-    )?;
+            (*sig.get_unchecked(index), index)
+          } && let None = (sig_element == 0).not().then(|| {
+            *del.get_unchecked_mut(index) =
+              del.get_unchecked(index).wrapping_neg();
+          }) {
+            ControlFlow::Break(Ok(()))
+          } else {
+            ControlFlow::Continue(())
+          }
+        }
+      })
+      .map_continue(Ok)
+      .into_value()?;
   }
 
   Ok(())
