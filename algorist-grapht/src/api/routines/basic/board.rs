@@ -367,12 +367,22 @@ pub(crate) fn gen_moves<G: GraphBackend>(
       .iter_mut()
       .zip(component_range.iter().map(|&range| range.cast_signed()).zip(wrap))
       .try_for_each(|(component, (max_component, &should_wrap))| {
-        (*component >= max_component && should_wrap).then(|| {
-          (0..*component)
-            .rev()
-            .step_by(max_component.cast_unsigned())
-            .for_each(|_| *component -= max_component);
-        })
+        match (
+          (component.is_negative() && should_wrap).then(|| {
+            (*component..0)
+              .step_by(max_component.cast_unsigned())
+              .for_each(|_| *component += max_component);
+          }),
+          (*component >= max_component && should_wrap).then(|| {
+            (max_component..*component)
+              .rev()
+              .step_by(max_component.cast_unsigned())
+              .for_each(|_| *component -= max_component);
+          }),
+        ) {
+          | (Some(()), _) | (_, Some(())) => Some(()),
+          | _ => None,
+        }
       });
 
     Ok(())
@@ -443,19 +453,13 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     let ((), target_sig) = unsafe {
       (
         *sig.get_unchecked_mut(i + 1) =
-          sig.get_unchecked(i) + d.saturating_pow(2) as usize,
+          sig.get_unchecked(i) + d.saturating_pow(2).cast_unsigned(),
         *sig.get_unchecked(i + 1),
       )
     };
-    let ((), ref_elem) = unsafe {
-      (*sig.get_unchecked_mut(i + 1) = target_sig, *sig.get_unchecked(i))
-    };
-    // +2 here to account for (1) element indices being 0-indexed and the
-    // `skip()` method working on a 1-indexed basis, and (2) the fact that only
-    // elements coming right at after the index we just modified above should be
-    // affected (i.e. the change should only carry down elements coming *after*
-    // the element at index `i + 1`.)
-    sig.iter_mut().skip(i + 2).for_each(|s| *s = ref_elem);
+    // NOTE: we skip however as many elements there are until reaching index `i
+    // + 1` (i.e. `i + 1` elements).
+    sig.iter_mut().skip(i + 2).for_each(|s| *s = target_sig);
     // NOTE: this may not be reordered. Do not attempt to reorder this because
     // last line's iteration seems like it could be skipped. Last line's
     // iteration's side effects on the `sig` collection are key, irrespective of
@@ -466,6 +470,7 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
       .not()
       .then_some(())
       .iter()
+      .cycle()
       .try_for_each(|()| {
         macro_rules! gen_vec {
           () => {{
@@ -476,6 +481,12 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               .map_err(|_| FillArcsError::AuxiliaryAlloc)
             {
               | Ok(out) => out,
+              // NOTE: the below line uses a new `Result<_, T(err)>` instead of
+              // repurposing the existing `Err` because otherwise we would carry
+              // through the same generic type for the `Ok` variant, when the
+              // overarching `Ok` variant that the closure's return value
+              // `ControlFlow` wraps actually requires a different type
+              // for the `Ok` variant that is inferred later on.
               | Err(err) => return ControlFlow::Break(Err(err)),
             }
           }};
@@ -501,9 +512,10 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               component_range, &wrap, directed,
             ) {
               | Ok(()) => ControlFlow::Continue(()),
+              // NOTE: see the note left on the `gen_vector` macro definition.
               | Err(err) => ControlFlow::Break(Err(err.into())),
             }?;
-            // Casting here won't wrap because all elements from
+            // NOTE: casting here won't wrap because all elements from
             // `component_range` are sourced from `normalize_board_size()`,
             // which itself takes in `isize` values and can only ever produce
             // (positive) coordinate ranges that can be denoted by an `isize`.
@@ -514,9 +526,10 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               .zip(component_range.iter().map(|range| range.cast_signed()))
               .rev()
               .try_for_each(|(x, max_x)| {
-                match *x + 1 {
-                  | n if n == max_x => (*x = 0, ControlFlow::Continue(())),
-                  | _ => (*x += 1, ControlFlow::Break(())),
+                if *x + 1 == max_x {
+                  (*x = 0, ControlFlow::Continue(()))
+                } else {
+                  (*x += 1, ControlFlow::Break(()))
                 }
                 .1
               })
@@ -525,29 +538,29 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
             ControlFlow::Continue((current_state, post_state))
           },
         )?;
-        unsafe {
-          if let (sig_element, index) = {
-            let index = del
-              .iter_mut()
-              .enumerate()
-              .rev()
-              .try_fold(usize::default(), |_, (i, d)| {
-                match (*d <= 0).then(|| *d = d.wrapping_neg()) {
-                  | Some(()) => ControlFlow::Continue(i),
-                  | None => ControlFlow::Break(i),
-                }
-              })
-              .into_value();
 
-            (*sig.get_unchecked(index), index)
-          } && let None = (sig_element == 0).not().then(|| {
-            *del.get_unchecked_mut(index) =
-              del.get_unchecked(index).wrapping_neg();
-          }) {
-            ControlFlow::Break(Ok(()))
-          } else {
-            ControlFlow::Continue(())
-          }
+        if let (sig_element, index) = {
+          let index = del
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .try_fold(usize::default(), |_, (i, d)| {
+              if (*d <= 0).then(|| *d = d.wrapping_neg()).is_some() {
+                ControlFlow::Continue(i)
+              } else {
+                ControlFlow::Break(i)
+              }
+            })
+            .into_value();
+
+          (unsafe { *sig.get_unchecked(index) }, index)
+        } && let None = (sig_element == 0).not().then(|| unsafe {
+          *del.get_unchecked_mut(index) =
+            del.get_unchecked(index).wrapping_neg();
+        }) {
+          ControlFlow::Break(Ok(()))
+        } else {
+          ControlFlow::Continue(())
         }
       })
       .map_continue(Ok)
