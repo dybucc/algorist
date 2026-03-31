@@ -21,10 +21,10 @@ use crate::{
   fields::FieldBuilder,
 };
 
-mod arc;
-mod iter;
-mod iter_mut;
-mod vertex;
+pub(crate) mod arc;
+pub(crate) mod iter;
+pub(crate) mod iter_mut;
+pub(crate) mod vertex;
 
 #[derive(Debug)]
 pub(crate) struct Graph {
@@ -164,25 +164,25 @@ impl ArcAddExt for Graph {
     // until they work. On those runs, the above assertion should serve as a
     // form of bounds checking.
     Ok(
-      _ = unsafe {
-        let one =
-          Rc::as_ptr(self.vertices.get_unchecked(*src.borrow())).cast_mut();
-
+      unsafe {
         (
-          (*one).arcs.try_reserve(1).map_err(|_| {
-            ArcAddError::AuxiliaryAlloc(AllocFailureSrc::ArcCreation)
-          })?,
-          (*one).arcs.push(
+          (*Rc::as_ptr(self.vertices.get_unchecked(src)).cast_mut())
+            .arcs
+            .try_reserve(1)
+            .map_err(|_| {
+              ArcAddError::AuxiliaryAlloc(AllocFailureSrc::ArcCreation)
+            })?,
+          (*Rc::as_ptr(self.vertices.get_unchecked(src)).cast_mut()).arcs.push(
             Arc {
-              tip:    Rc::clone(self.vertices.get_unchecked(*dst.borrow()))
-                .into(),
+              tip:    Rc::clone(self.vertices.get_unchecked(dst)).into(),
               fields: FieldBuilder::default(),
               id:     String::new(),
             }
             .into(),
           ),
         )
-      },
+      }
+      .0,
     )
   }
 }

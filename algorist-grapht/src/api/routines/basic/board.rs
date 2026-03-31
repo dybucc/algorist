@@ -17,6 +17,9 @@ use crate::{
   fields_of,
 };
 
+// TODO: tweak all `unsafe` non-bounds-checking instances with bounds-checked
+// versions that run in debug builds.
+
 #[derive(Debug, Error)]
 pub(crate) enum NormalizationError {
   #[error("allocation of output component ranges failed")]
@@ -354,39 +357,55 @@ pub(crate) enum GenMovesError {}
 pub(crate) fn gen_moves<G: GraphBackend>(
   graph: &mut G,
   vertex: usize,
-  current_state: &mut [isize],
-  prior_state: &[isize],
-  component_range: &[usize],
-  wrap: &[bool],
-  directed: bool,
+  (current_state, prior_state, change): (&mut [isize], &[isize], &[isize]),
+  (component_range, wrap, directed, piece): (&[usize], &[bool], bool, isize),
 ) -> Result<(), GenMovesError> {
+  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
+
   // The below cast roundtrips will not cause overflow because of the same
   // reasons as outlined in `fill_arcs()`.
-  (0..usize::MAX).try_for_each(|weight| {
-    current_state
-      .iter_mut()
-      .zip(component_range.iter().map(|&range| range.cast_signed()).zip(wrap))
-      .try_for_each(|(component, (max_component, &should_wrap))| {
-        match (
-          (component.is_negative() && should_wrap).then(|| {
-            (*component..0)
-              .step_by(max_component.cast_unsigned())
-              .for_each(|_| *component += max_component);
-          }),
-          (*component >= max_component && should_wrap).then(|| {
-            (max_component..*component)
-              .rev()
-              .step_by(max_component.cast_unsigned())
-              .for_each(|_| *component -= max_component);
-          }),
-        ) {
-          | (Some(()), _) | (_, Some(())) => Some(()),
-          | _ => None,
-        }
-      });
+  (0..usize::MAX)
+    .try_for_each(|weight| {
+      current_state
+        .iter_mut()
+        .zip(component_range.iter().map(|&range| range.cast_signed()).zip(wrap))
+        .try_for_each(|(component, (max_component, &should_wrap))| {
+          match (
+            (component.is_negative() && should_wrap),
+            (*component >= max_component && should_wrap),
+          ) {
+            | (true, _) => ControlFlow::Continue(
+              (*component..0)
+                .step_by(max_component.cast_unsigned())
+                .for_each(|_| *component += max_component),
+            ),
+            | (_, true) => ControlFlow::Continue(
+              (max_component..*component)
+                .rev()
+                .step_by(max_component.cast_unsigned())
+                .for_each(|_| *component -= max_component),
+            ),
+            | _ => ControlFlow::Break(Ok(())),
+          }
+        })?;
+      match piece.is_negative().then(|| current_state.iter().ne(prior_state)) {
+        | Some(true) | None => ControlFlow::Continue(()),
+        | Some(false) => ControlFlow::Break(Ok(())),
+      }?;
+      // TODO: arc addition logic
 
-    Ok(())
-  })
+      match piece.is_positive().then_some(ControlFlow::Break(Ok(()))) {
+        | Some(ret) => ret,
+        | None => ControlFlow::Continue(
+          current_state
+            .iter_mut()
+            .zip(change)
+            .for_each(|(component, delta)| *component += delta),
+        ),
+      }
+    })
+    .map_continue(Ok)
+    .into_value()
 }
 
 #[derive(Debug, Error)]
@@ -428,6 +447,8 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
   wrap: isize,
   directed: bool,
 ) -> Result<(), FillArcsError> {
+  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
+
   let ((wrap, mut del, mut sig), piece_unsigned) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
   while let ControlFlow::Break((i, d)) = del
@@ -484,7 +505,7 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               // NOTE: the below line uses a new `Result<_, T(err)>` instead of
               // repurposing the existing `Err` because otherwise we would carry
               // through the same generic type for the `Ok` variant, when the
-              // overarching `Ok` variant that the closure's return value
+              // overarching `Ok` variant that the closure's returned
               // `ControlFlow` wraps actually requires a different type
               // for the `Ok` variant that is inferred later on.
               | Err(err) => return ControlFlow::Break(Err(err)),
@@ -503,13 +524,15 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               .zip(
                 current_state
                   .iter()
-                  .zip(del.iter())
+                  .zip(&del)
                   .map(|(component, change)| component + change),
               )
               .for_each(|(post_move, pre_move)| *post_move = pre_move);
             match gen_moves(
-              graph, vertex_idx, &mut post_state, &current_state,
-              component_range, &wrap, directed,
+              graph,
+              vertex_idx,
+              (&mut post_state, &current_state, &del),
+              (component_range, &wrap, directed, piece),
             ) {
               | Ok(()) => ControlFlow::Continue(()),
               // NOTE: see the note left on the `gen_vector` macro definition.
@@ -526,10 +549,9 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
               .zip(component_range.iter().map(|range| range.cast_signed()))
               .rev()
               .try_for_each(|(x, max_x)| {
-                if *x + 1 == max_x {
-                  (*x = 0, ControlFlow::Continue(()))
-                } else {
-                  (*x += 1, ControlFlow::Break(()))
+                match (*x + 1).cmp(&max_x) {
+                  | Ordering::Equal => (*x = 0, ControlFlow::Continue(())),
+                  | _ => (*x += 1, ControlFlow::Break(())),
                 }
                 .1
               })
@@ -539,28 +561,25 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
           },
         )?;
 
-        if let (sig_element, index) = {
-          let index = del
-            .iter_mut()
-            .enumerate()
-            .rev()
-            .try_fold(usize::default(), |_, (i, d)| {
-              if (*d <= 0).then(|| *d = d.wrapping_neg()).is_some() {
-                ControlFlow::Continue(i)
-              } else {
-                ControlFlow::Break(i)
-              }
-            })
-            .into_value();
-
-          (unsafe { *sig.get_unchecked(index) }, index)
-        } && let None = (sig_element == 0).not().then(|| unsafe {
-          *del.get_unchecked_mut(index) =
-            del.get_unchecked(index).wrapping_neg();
-        }) {
-          ControlFlow::Break(Ok(()))
-        } else {
-          ControlFlow::Continue(())
+        match del
+          .iter_mut()
+          .enumerate()
+          .rev()
+          .try_fold(usize::default(), |_, (i, d)| {
+            match (*d <= 0).then(|| *d = d.wrapping_neg()).or_else(|| {
+              (unsafe { *sig.get_unchecked(i) } != 0)
+                .then(|| *d = d.wrapping_neg())
+                .filter(|()| false)
+            }) {
+              | Some(()) =>
+                ControlFlow::Continue(unsafe { *sig.get_unchecked(i) }),
+              | _ => ControlFlow::Break(unsafe { *sig.get_unchecked(i) }),
+            }
+          })
+          .into_value()
+        {
+          | 0 => ControlFlow::Break(Ok(())),
+          | _ => ControlFlow::Continue(()),
         }
       })
       .map_continue(Ok)
