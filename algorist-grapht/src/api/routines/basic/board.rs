@@ -90,7 +90,7 @@ pub(crate) enum BuildGraphError {
   #[error("failed to create graph: {0}")]
   GraphCreationFailed(#[source] Box<dyn Error>),
   #[error("auxiliary heap allocation failed")]
-  AuxiliaryAllocFailed,
+  AuxiliaryAlloc,
   #[error("writing onto the name stream for vertex ids failed")]
   FaultyStreamWrite,
   #[error(transparent)]
@@ -98,11 +98,11 @@ pub(crate) enum BuildGraphError {
 }
 
 impl From<TryReserveError> for BuildGraphError {
-  fn from(_: TryReserveError) -> Self { Self::AuxiliaryAllocFailed }
+  fn from(_: TryReserveError) -> Self { Self::AuxiliaryAlloc }
 }
 
 impl From<AllocError> for BuildGraphError {
-  fn from(_: AllocError) -> Self { Self::AuxiliaryAllocFailed }
+  fn from(_: AllocError) -> Self { Self::AuxiliaryAlloc }
 }
 
 pub(crate) fn build_graph<
@@ -119,6 +119,8 @@ where
   for<'a> <G as GraphBackend>::Error: 'a,
   for<'a> <<G as GraphBackend>::Vertex as FieldsExt<usize, 3>>::Error: 'a,
 {
+  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
+
   let (mut name_state, mut graph) = (
     (0..component_range.len()).fold(
       Vec::try_with_capacity(component_range.len())?,
@@ -137,7 +139,7 @@ where
     .map_err(|e| {
       let ext: Box<dyn Error> = match Box::try_new(e) {
         | Ok(e) => e,
-        | Err(_) => return BuildGraphError::AuxiliaryAllocFailed,
+        | Err(_) => return BuildGraphError::AuxiliaryAlloc,
       };
 
       BuildGraphError::GraphCreationFailed(ext)
@@ -150,7 +152,7 @@ where
       component_range
         .iter()
         .map(|&component_range| {
-          // `c > 0` should hold for any component `c` in `nn`
+          // `c > 0` should hold for any component `c` in `component_range`
           // after running `normalize_board_size()`.
           debug_assert_ne!(component_range, 0);
 
@@ -165,8 +167,6 @@ where
         let mut name = name_state.iter().enumerate().try_fold(
           name,
           |mut name, (idx, component)| {
-            write!(&mut name, ".{component}")
-              .map_err(|_| BuildGraphError::FaultyStreamWrite)?;
             // TODO: the original GraphBase mentions that the first three
             // components are saved in integer utility fields, but in theory,
             // indices `0..3` point at the "last" three components, because
@@ -175,34 +175,50 @@ where
             // components would be the last three in this iterator. For now,
             // we're only reproducing the same behavior as the one in the
             // original GraphBase.
-            (..3).contains(&idx).then_some(()).iter().try_for_each(|()| {
-              let [x, y, z] =
-                fields_of!(usize; 3 => v in G: vertex).map_err(|e| {
-                  let ext: Box<dyn Error> = match Box::try_new(e) {
-                    | Ok(e) => e,
-                    | Err(_) => return BuildGraphError::AuxiliaryAllocFailed,
-                  };
+            Ok::<_, BuildGraphError>(
+              (
+                match idx {
+                  | n if n != name_state.len() - 1 =>
+                    write!(&mut name, ".{component}"),
+                  | _ => write!(&mut name, "{component}"),
+                }
+                .map_err(|_| BuildGraphError::FaultyStreamWrite)?,
+                (..3).contains(&idx).then_some(()).iter().try_for_each(
+                  |()| {
+                    // SAFETY: `idx` only ever takes on values in the range
+                    // `0..3`.
+                    Ok::<_, BuildGraphError>(
+                      match (
+                        idx,
+                        fields_of!(usize; 3 => v in G: vertex).map_err(
+                          |e| {
+                            let err: Box<dyn Error> = match Box::try_new(e) {
+                              | Ok(e) => e,
+                              | Err(_) =>
+                                return BuildGraphError::AuxiliaryAlloc,
+                            };
 
-                  BuildGraphError::WrongFieldAccess(ext)
-                })?;
-              match idx {
-                | 0 => *x = *component,
-                | 1 => *y = *component,
-                | 2 => *z = *component,
-                // SAFETY: here `idx` only ever takes on values in the range
-                // `0..3`.
-                | _ => unsafe { hint::unreachable_unchecked() },
-              }
-
-              Ok::<_, BuildGraphError>(())
-            })?;
-
-            Ok::<_, BuildGraphError>(name)
+                            BuildGraphError::WrongFieldAccess(err)
+                          },
+                        )?,
+                      ) {
+                        | (0, [x, ..]) => *x = *component,
+                        | (1, [_, y, _]) => *y = *component,
+                        | (2, [.., z]) => *z = *component,
+                        | _ => unsafe { hint::unreachable_unchecked() },
+                      },
+                    )
+                  },
+                )?,
+                name,
+              )
+                .2,
+            )
           },
         )?;
-        name.pop(); // Get rid of the last `.`.
 
-        name
+        // Get rid of the last `.`.
+        (name.pop(), name).1
       };
       vertex.set_id(name.as_str());
       name.clear();
@@ -211,12 +227,13 @@ where
         .zip(component_range)
         .rev()
         .try_for_each(|(component, ref_component)| {
-          if *component + 1 == *ref_component {
-            (*component = 0, ControlFlow::Continue(()))
-          } else {
-            (*component += 1, ControlFlow::Break(()))
+          match (*component + 1 == *ref_component)
+            .then(|| *component += 1)
+            .or_else(|| (*component += 1, None).1)
+          {
+            | Some(()) => ControlFlow::Continue(()),
+            | _ => ControlFlow::Break(()),
           }
-          .1
         })
         .into_value();
 
@@ -394,14 +411,14 @@ pub(crate) fn gen_moves<G: GraphBackend>(
       }?;
       // TODO: arc addition logic
 
-      match piece.is_positive().then_some(ControlFlow::Break(Ok(()))) {
-        | Some(ret) => ret,
-        | None => ControlFlow::Continue(
-          current_state
-            .iter_mut()
-            .zip(change)
-            .for_each(|(component, delta)| *component += delta),
-        ),
+      match piece.is_positive().then_some(Ok(())).ok_or_else(|| {
+        current_state
+          .iter_mut()
+          .zip(change)
+          .for_each(|(component, delta)| *component += delta);
+      }) {
+        | Ok(out) => ControlFlow::Break(out),
+        | Err(()) => ControlFlow::Continue(()),
       }
     })
     .map_continue(Ok)
@@ -447,8 +464,6 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
   wrap: isize,
   directed: bool,
 ) -> Result<(), FillArcsError> {
-  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
-
   let ((wrap, mut del, mut sig), piece_unsigned) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
   while let ControlFlow::Break((i, d)) = del
@@ -456,12 +471,13 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     .zip(sig.iter().copied().enumerate().take(component_range.len()))
     .rev()
     .try_for_each(|(d, (i, s))| {
-      if s + (*d + 1).saturating_pow(2).cast_unsigned() > piece_unsigned {
-        (*d = 0, ControlFlow::Continue(()))
-      } else {
-        (*d += 1, ControlFlow::Break((i, &*d)))
+      match (s + (*d + 1).saturating_pow(2).cast_unsigned() > piece_unsigned)
+        .then(|| *d = 0)
+        .or_else(|| (*d += 1, None).1)
+      {
+        | Some(()) => ControlFlow::Continue(()),
+        | _ => ControlFlow::Break((i, &*d)),
       }
-      .1
     })
   {
     // SAFETY: `i` is always within bounds by virtue of being a result of an
@@ -470,24 +486,20 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
     // `del`, and the above iteration being dominated by the latter (see the
     // `take()` call on the iterator produced by `sig` and the allocation sizes
     // in the `init_state()` routine.)
-
-    let ((), target_sig) = unsafe {
-      (
-        *sig.get_unchecked_mut(i + 1) =
-          sig.get_unchecked(i) + d.saturating_pow(2).cast_unsigned(),
-        *sig.get_unchecked(i + 1),
-      )
-    };
     // NOTE: we skip however as many elements there are until reaching index `i
-    // + 1` (i.e. `i + 1` elements).
-    sig.iter_mut().skip(i + 2).for_each(|s| *s = target_sig);
-    // NOTE: this may not be reordered. Do not attempt to reorder this because
-    // last line's iteration seems like it could be skipped. Last line's
-    // iteration's side effects on the `sig` collection are key, irrespective of
-    // whether the carried through value thus far (i.e. the solution to `del[0]
-    // + del[1] + ... + del[d - 1] = p` for all non-zero `del` elements) turns
-    // out to actually yield a solution for `p`.
-    (target_sig < piece_unsigned)
+    // + 1` (i.e. `i + 1` elements, corresponding to the `i + 1` indices from
+    // `0..=i`.)
+    ((0..sig.len()).skip(i + 1).fold(
+      unsafe { *sig.get_unchecked(i) },
+      |target_sig, s| unsafe {
+        (
+          *sig.get_unchecked_mut(s) =
+            target_sig + d.saturating_pow(2).cast_unsigned(),
+          target_sig,
+        )
+          .1
+      },
+    ) < piece_unsigned)
       .not()
       .then_some(())
       .iter()
@@ -516,9 +528,6 @@ pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
         (0..graph.iter().count()).try_fold(
           (gen_vec!(), gen_vec!()),
           |(mut current_state, mut post_state), vertex_idx| {
-            // `post_state` here serves the purpose of a buffer that holds the
-            // (moved) coordinates of `current_state` during move generation
-            // within `gen_moves()`.
             post_state
               .iter_mut()
               .zip(
