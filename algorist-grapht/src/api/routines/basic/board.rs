@@ -5,29 +5,27 @@ use std::{
   error::Error,
   fmt::{self, Debug, Display, Formatter, Write as _},
   hint,
+  iter,
   num::NonZeroIsize,
   ops::{ControlFlow, Not},
 };
 
+use itertools::Itertools;
 use num_traits::AsPrimitive;
 use thiserror::Error;
 
 use crate::{
-  api::{FieldsExt, GraphBackend, IdExt, VertexIterExt},
+  api::{ArcAddExt, FieldsExt, GraphBackend, IdExt, VertexIterExt},
   fields_of,
 };
 
-// TODO: tweak all `unsafe` non-bounds-checking instances with bounds-checked
-// versions that run in debug builds.
+// TODO: tweak all `unsafe` non-bounds-checking callsites with bounds-checked
+// versions that run only in debug builds.
 
 #[derive(Debug, Error)]
 pub(crate) enum NormalizationError {
   #[error("allocation of output component ranges failed")]
   ComponentRangesAllocFailed,
-}
-
-impl From<TryReserveError> for NormalizationError {
-  fn from(_: TryReserveError) -> Self { Self::ComponentRangesAllocFailed }
 }
 
 pub(crate) fn normalize_board_size(
@@ -36,48 +34,47 @@ pub(crate) fn normalize_board_size(
   n3: isize,
   n4: isize,
 ) -> Result<Vec<usize>, NormalizationError> {
-  Ok(
-    [n1, n2, n3, n4]
-      .iter()
-      .enumerate()
-      .try_fold(
-        Vec::try_with_capacity(4)?,
-        |mut components, (component_num, &component)| match component.cmp(&0) {
-          | Ordering::Less | Ordering::Equal if component_num == 0 =>
-            ControlFlow::Break(Ok(
-              (0..2)
-                .fold(components, |mut output, _| (output.push(8), output).1),
-            )),
-          | Ordering::Less => ControlFlow::Break(
-            (
-              components.clear(),
-              components.try_reserve_exact(component.unsigned_abs()).map(
-                |()| {
-                  (
-                    _ = [n1, n2, n3]
-                      .into_iter()
-                      .take(component_num)
-                      .cycle()
-                      .take(component.unsigned_abs())
-                      .map(isize::cast_unsigned)
-                      .collect_into(&mut components),
-                    components,
-                  )
-                    .1
-                },
-              ),
-            )
-              .1,
-          ),
-          | Ordering::Equal => ControlFlow::Break(Ok(components)),
-          | Ordering::Greater => ControlFlow::Continue(
-            (components.push(component.cast_unsigned()), components).1,
-          ),
-        },
-      )
-      .map_continue(Ok)
-      .into_value()?,
-  )
+  [n1, n2, n3, n4]
+    .iter()
+    .enumerate()
+    .try_fold(
+      Vec::try_with_capacity(4)
+        .map_err(|_| NormalizationError::ComponentRangesAllocFailed)?,
+      |mut components, (component_num, &component)| match (
+        component.cmp(&0),
+        component_num,
+      ) {
+        | (Ordering::Less | Ordering::Equal, 0) => ControlFlow::Break(Ok(
+          (0..2).fold(components, |mut output, _| (output.push(8), output).1),
+        )),
+        | (Ordering::Less, _) => ControlFlow::Break(
+          (
+            components.clear(),
+            components.try_reserve_exact(component.unsigned_abs()).map(|()| {
+              (
+                _ = [n1, n2, n3]
+                  .into_iter()
+                  .take(component_num)
+                  .cycle()
+                  .take(component.unsigned_abs())
+                  .map(isize::cast_unsigned)
+                  .collect_into(&mut components),
+                components,
+              )
+                .1
+            }),
+          )
+            .1,
+        ),
+        | (Ordering::Equal, _) => ControlFlow::Break(Ok(components)),
+        | (Ordering::Greater, _) => ControlFlow::Continue(
+          (components.push(component.cast_unsigned()), components).1,
+        ),
+      },
+    )
+    .map_continue(Ok)
+    .into_value()
+    .map_err(|_| NormalizationError::ComponentRangesAllocFailed)
 }
 
 #[derive(Debug, Error)]
@@ -89,20 +86,12 @@ pub(crate) enum BuildGraphError {
   ComponentSizesOutOfBounds,
   #[error("failed to create graph: {0}")]
   GraphCreationFailed(#[source] Box<dyn Error>),
-  #[error("auxiliary heap allocation failed")]
+  #[error("auxiliary allocation failed")]
   AuxiliaryAlloc,
   #[error("writing onto the name stream for vertex ids failed")]
-  FaultyStreamWrite,
+  StreamWrite,
   #[error(transparent)]
-  WrongFieldAccess(Box<dyn Error>),
-}
-
-impl From<TryReserveError> for BuildGraphError {
-  fn from(_: TryReserveError) -> Self { Self::AuxiliaryAlloc }
-}
-
-impl From<AllocError> for BuildGraphError {
-  fn from(_: AllocError) -> Self { Self::AuxiliaryAlloc }
+  FieldAccess(Box<dyn Error>),
 }
 
 pub(crate) fn build_graph<
@@ -123,12 +112,9 @@ where
 
   let (mut name_state, mut graph) = (
     (0..component_range.len()).fold(
-      Vec::try_with_capacity(component_range.len())?,
-      |mut output, _| {
-        output.push(0);
-
-        output
-      },
+      Vec::try_with_capacity(component_range.len())
+        .map_err(|_| BuildGraphError::AuxiliaryAlloc)?,
+      |mut output, _| (output.push(0), output).1,
     ),
     G::new(
       component_range
@@ -137,12 +123,10 @@ where
         .ok_or(BuildGraphError::ComponentSizesOutOfBounds)?,
     )
     .map_err(|e| {
-      let ext: Box<dyn Error> = match Box::try_new(e) {
-        | Ok(e) => e,
+      BuildGraphError::GraphCreationFailed(match Box::try_new(e) {
+        | Ok(e) => e as Box<dyn Error>,
         | Err(_) => return BuildGraphError::AuxiliaryAlloc,
-      };
-
-      BuildGraphError::GraphCreationFailed(ext)
+      })
     })?,
   );
   graph.iter_mut().try_fold(
@@ -152,92 +136,94 @@ where
       component_range
         .iter()
         .map(|&component_range| {
-          // `c > 0` should hold for any component `c` in `component_range`
-          // after running `normalize_board_size()`.
-          debug_assert_ne!(component_range, 0);
-
-          // +1 because `ilog10()` rounds down.
-          component_range.ilog10() as usize + 1
+          (
+            // `c > 0` should hold for any component `c` in `component_range`
+            // after running `normalize_board_size()`.
+            debug_assert_ne!(component_range, 0),
+            // +1 because `ilog10()` rounds down.
+            component_range.ilog10() as usize + 1,
+          )
+            .1
         })
         .sum::<usize>()
         + component_range.len(),
-    )?,
+    )
+    .map_err(|_| BuildGraphError::AuxiliaryAlloc)?,
     |mut name, vertex| {
-      name = {
-        let mut name = name_state.iter().enumerate().try_fold(
-          name,
-          |mut name, (idx, component)| {
-            // TODO: the original GraphBase mentions that the first three
-            // components are saved in integer utility fields, but in theory,
-            // indices `0..3` point at the "last" three components, because
-            // `name_state` iterates from left to right in the following
-            // sequence: (a, b, ..., beta, alpha). The true "first" three
-            // components would be the last three in this iterator. For now,
-            // we're only reproducing the same behavior as the one in the
-            // original GraphBase.
-            Ok::<_, BuildGraphError>(
-              (
-                match idx {
-                  | n if n != name_state.len() - 1 =>
-                    write!(&mut name, ".{component}"),
-                  | _ => write!(&mut name, "{component}"),
-                }
-                .map_err(|_| BuildGraphError::FaultyStreamWrite)?,
-                (..3).contains(&idx).then_some(()).iter().try_for_each(
-                  |()| {
-                    // SAFETY: `idx` only ever takes on values in the range
-                    // `0..3`.
-                    Ok::<_, BuildGraphError>(
-                      match (
-                        idx,
-                        fields_of!(usize; 3 => v in G: vertex).map_err(
-                          |e| {
-                            let err: Box<dyn Error> = match Box::try_new(e) {
-                              | Ok(e) => e,
-                              | Err(_) =>
-                                return BuildGraphError::AuxiliaryAlloc,
-                            };
-
-                            BuildGraphError::WrongFieldAccess(err)
-                          },
-                        )?,
-                      ) {
-                        | (0, [x, ..]) => *x = *component,
-                        | (1, [_, y, _]) => *y = *component,
-                        | (2, [.., z]) => *z = *component,
-                        | _ => unsafe { hint::unreachable_unchecked() },
-                      },
-                    )
-                  },
-                )?,
-                name,
+      Ok::<_, BuildGraphError>(
+        (
+          name = name_state.iter().enumerate().try_fold(
+            name,
+            |mut name, (idx, component)| {
+              // TODO: the original GraphBase mentions that the first three
+              // components are saved in integer utility fields, but in theory,
+              // indices `0..3` point at the "last" three components, because
+              // `name_state` iterates from left to right in the following
+              // sequence: (a, b, ..., beta, alpha). The true "first" three
+              // components would be the last three in this iterator. For now,
+              // we're only reproducing the same behavior as the one in the
+              // original GraphBase.
+              Ok::<_, BuildGraphError>(
+                (
+                  match idx {
+                    | n if n != name_state.len() - 1 =>
+                      write!(&mut name, "{component}."),
+                    | _ => write!(&mut name, "{component}"),
+                  }
+                  .map_err(|_| BuildGraphError::StreamWrite)?,
+                  (..3).contains(&idx).then_some(()).iter().try_for_each(
+                    |()| {
+                      // SAFETY: `idx` only ever takes on values in the range
+                      // `0..3`.
+                      Ok::<_, BuildGraphError>(
+                        match (
+                          idx,
+                          fields_of!(usize; 3 => v in G: vertex).map_err(
+                            |e| {
+                              BuildGraphError::FieldAccess(
+                                match Box::try_new(e) {
+                                  | Ok(e) => e as Box<dyn Error>,
+                                  | Err(_) =>
+                                    return BuildGraphError::AuxiliaryAlloc,
+                                },
+                              )
+                            },
+                          )?,
+                        ) {
+                          | (0, [x, ..]) => *x = *component,
+                          | (1, [_, y, _]) => *y = *component,
+                          | (2, [.., z]) => *z = *component,
+                          | _ => unsafe { hint::unreachable_unchecked() },
+                        },
+                      )
+                    },
+                  )?,
+                  name,
+                )
+                  .2,
               )
-                .2,
-            )
-          },
-        )?;
-
-        // Get rid of the last `.`.
-        (name.pop(), name).1
-      };
-      vertex.set_id(name.as_str());
-      name.clear();
-      name_state
-        .iter_mut()
-        .zip(component_range)
-        .rev()
-        .try_for_each(|(component, ref_component)| {
-          match (*component + 1 == *ref_component)
-            .then(|| *component += 1)
-            .or_else(|| (*component += 1, None).1)
-          {
-            | Some(()) => ControlFlow::Continue(()),
-            | _ => ControlFlow::Break(()),
-          }
-        })
-        .into_value();
-
-      Ok::<_, BuildGraphError>(name)
+            },
+          )?,
+          vertex.set_id(name.as_str()),
+          name.clear(),
+          name_state
+            .iter_mut()
+            .zip(component_range)
+            .rev()
+            .try_for_each(|(component, ref_component)| {
+              match (*component + 1 == *ref_component)
+                .then(|| *component += 1)
+                .or_else(|| (*component += 1, None).1)
+              {
+                | Some(()) => ControlFlow::Continue(()),
+                | _ => ControlFlow::Break(()),
+              }
+            })
+            .into_value(),
+          name,
+        )
+          .4,
+      )
     },
   )?;
 
@@ -260,41 +246,83 @@ pub(crate) fn name_graph<G: GraphBackend + IdExt>(
 where
   for<'a> &'a str: Into<<G as IdExt>::Id>,
 {
-  // The string must account for `board()`, however as many digits each of the
-  // parameters has (considering `ilog10()` rounds downward,) and for both the
-  // commas after each of the parameters (other than the `directed` parameter,)
-  // and the extra `directed` boolean parameter.
-  let mut graph_id = String::try_with_capacity(
-    "board()".len()
-      + params
-        .iter()
-        .map(|param| {
-          if let Some(digits) = param.checked_ilog10() {
-            digits as usize + 1
-          } else {
-            let digits = param.unsigned_abs().ilog10() as usize;
-
-            if param.is_negative() { digits + 2 } else { digits + 1 }
-          }
-        })
-        .sum::<usize>()
-      + 1
-      + params.len(),
-  )
-  .map_err(|_| NamingError::AuxiliaryAlloc)?;
+  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
 
   macro_rules! write_err {
-    ($($args:expr),+) => {{
-      write!(graph_id, $($args),+).map_err(|_| NamingError::StreamWrite)
+    ($graph_id:expr, $($args:expr),+) => {{
+      write!($graph_id, "{}", $($args),+).map_err(|_| NamingError::StreamWrite)
     }};
   }
 
-  write_err!("board(")?;
-  params.iter().try_for_each(|param| write_err!("{param},"))?;
-  write_err!("{})", if directed { "1" } else { "0" })?;
-  graph.set_id(graph_id.as_str());
+  #[derive(Debug)]
+  enum IterElem {
+    Str(&'static str),
+    Num(isize),
+  }
 
-  Ok(())
+  impl Display for IterElem {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+      match self {
+        | Self::Str(inner) => <str as Display>::fmt(inner, f),
+        | Self::Num(inner) => <isize as Display>::fmt(inner, f),
+      }
+    }
+  }
+
+  impl From<&'static str> for IterElem {
+    fn from(value: &'static str) -> Self { Self::Str(value) }
+  }
+
+  impl From<isize> for IterElem {
+    fn from(value: isize) -> Self { Self::Num(value) }
+  }
+
+  impl<'a> From<&'a isize> for IterElem {
+    fn from(value: &'a isize) -> Self { Self::Num(*value) }
+  }
+
+  // The string must account for
+  // (1) `board()`, and
+  // (2) however as many digits each of the parameters has (considering
+  //     `ilog10()` rounds downward,) and
+  // (3) for both
+  //     (a) the commas after each of the parameters (other than the `directed`
+  //         parameter,) and
+  //     (b) the extra `directed` boolean parameter (encoded as `0`/`1`.)
+  Ok(
+    graph.set_id(
+      iter::once("board(")
+        .map_into::<IterElem>()
+        .chain(params.iter().map_into())
+        .chain(iter::once(isize::from(directed)).map_into())
+        .chain(iter::once(")").map_into::<IterElem>())
+        .try_fold(
+          String::try_with_capacity(
+            "board()".len()
+              + params
+                .iter()
+                .map(|param| {
+                  match (
+                    param.checked_ilog10(),
+                    param.unsigned_abs().ilog10() as usize,
+                  ) {
+                    | (Some(digits), _) => digits as usize + 1,
+                    | (_, digits) if param.is_negative() => digits + 2,
+                    | (_, digits) => digits + 1,
+                  }
+                })
+                .sum::<usize>()
+              + params.len()
+              + 1,
+          )
+          .map_err(|_| NamingError::AuxiliaryAlloc)?,
+          |mut graph_id, string| {
+            Ok((write_err!(graph_id, string)?, graph_id).1)
+          },
+        )?
+        .as_str(),
+    ),
+  )
 }
 
 #[derive(Debug, Error)]
@@ -369,14 +397,22 @@ pub(crate) fn init_state(
 }
 
 #[derive(Debug, Error)]
-pub(crate) enum GenMovesError {}
+pub(crate) enum GenMovesError {
+  #[error(transparent)]
+  ArcAddition(Box<dyn Error>),
+  #[error("auxiliary allocation failed")]
+  AuxiliaryAlloc,
+}
 
-pub(crate) fn gen_moves<G: GraphBackend>(
+pub(crate) fn gen_moves<G: GraphBackend + ArcAddExt>(
   graph: &mut G,
-  vertex: usize,
+  src: usize,
   (current_state, prior_state, change): (&mut [isize], &[isize], &[isize]),
   (component_range, wrap, directed, piece): (&[usize], &[bool], bool, isize),
-) -> Result<(), GenMovesError> {
+) -> Result<(), GenMovesError>
+where
+  for<'a> <G as ArcAddExt>::Error: 'a,
+{
   #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
 
   // The below cast roundtrips will not cause overflow because of the same
@@ -409,7 +445,39 @@ pub(crate) fn gen_moves<G: GraphBackend>(
         | Some(true) | None => ControlFlow::Continue(()),
         | Some(false) => ControlFlow::Break(Ok(())),
       }?;
-      // TODO: arc addition logic
+      // TODO: change `ArcAddExt` to allow adding weights to arcs/edges.
+      match (
+        (
+          directed,
+          current_state
+            .iter()
+            .zip(
+              component_range.iter().map(|component| component.cast_signed()),
+            )
+            .skip(1)
+            .fold(
+              unsafe { *current_state.first().unwrap_unchecked() },
+              |idx, (component, max_range)| max_range * idx + component,
+            )
+            .cast_unsigned(),
+        ),
+        (
+          |e| {
+            ControlFlow::Break(Err(e).map_err(|e| {
+              GenMovesError::ArcAddition(match Box::try_new(e) {
+                | Ok(e) => e as Box<dyn Error>,
+                | Err(_) => return GenMovesError::AuxiliaryAlloc,
+              })
+            }))
+          },
+          |()| ControlFlow::Continue(()),
+        ),
+      ) {
+        | ((true, dst), (def, map)) =>
+          graph.new_arc(src, dst).map_or_else(def, map),
+        | ((false, dst), (def, map)) =>
+          graph.new_edge(src, dst).map_or_else(def, map),
+      }?;
 
       match piece.is_positive().then_some(Ok(())).ok_or_else(|| {
         current_state
@@ -457,13 +525,18 @@ impl From<GenMovesError> for FillArcsError {
   fn from(value: GenMovesError) -> Self { todo!() }
 }
 
-pub(crate) fn fill_arcs<G: GraphBackend + for<'a> VertexIterExt<'a, G>>(
+pub(crate) fn fill_arcs<
+  G: GraphBackend + for<'a> VertexIterExt<'a, G> + ArcAddExt,
+>(
   graph: &mut G,
   component_range: &[usize],
   piece: isize,
   wrap: isize,
   directed: bool,
-) -> Result<(), FillArcsError> {
+) -> Result<(), FillArcsError>
+where
+  for<'a> <G as ArcAddExt>::Error: 'a,
+{
   let ((wrap, mut del, mut sig), piece_unsigned) =
     (init_state(wrap, component_range.len())?, piece.unsigned_abs());
   while let ControlFlow::Break((i, d)) = del
@@ -654,11 +727,7 @@ impl From<BuildGraphError> for BoardError {
         GraphBuildErrorKind::ComponentSizesOutOfBounds.into(),
       | BuildGraphError::GraphCreationFailed(e) =>
         GraphBuildErrorKind::GraphCreationFailed(e).into(),
-      | e => {
-        let output: Box<dyn Error> = Box::new(e);
-
-        output.into()
-      },
+      | e => (Box::new(e) as Box<dyn Error>).into(),
     }
   }
 }
@@ -726,6 +795,7 @@ pub(crate) trait Board:
     Vertex: IdExt<Id = <Self as Board>::VertexId> + FieldsExt<usize, 3>,
   > + for<'a> VertexIterExt<'a, Self>
   + IdExt<Id = <Self as Board>::GraphId>
+  + ArcAddExt
 where
   for<'a> &'a str: Into<<Self as Board>::GraphId>
     + Into<<Self as Board>::VertexId>

@@ -51,7 +51,7 @@ where
     mut producer: impl FnMut() -> Result<R, E>,
   ) -> Result<[&mut Q; N], <Self as FieldsExt<T, N>>::Error>
   where
-    T: BorrowMut<Q> + 'a,
+    T: BorrowMut<Q>,
   {
     fn extract_n<'a, S: FieldsExt<T, N> + 'a, T, Q: 'a, const N: usize>(
       entry: &mut Vec<Box<dyn Any>>,
@@ -59,34 +59,39 @@ where
     where
       for<'b> T: BorrowMut<Q> + 'b,
     {
-      let mut output = [ptr::null_mut(); N];
-      entry.iter_mut().enumerate().take(N).for_each(|(i, ty)| {
-        // SAFETY: all elements `ty` in `entry` are of type `T` by virtue of
-        // hashing from `T`'s `TypeId` to the bucket of values `ty` of type `T`.
-        output[i] = unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() };
-      });
-
-      // SAFETY: the pointer actually points to the underlying value behind the
+      // SAFETY: each pointer actually points to the underlying value behind the
       // `Box<dyn Any>` of the hashmap `entry` is sourced from, so producing a
       // reference to it is sound.
-      output.map(|ty| unsafe { ty.as_mut_unchecked() })
+      entry
+        .iter_mut()
+        .enumerate()
+        .take(N)
+        .fold([ptr::null_mut(); N], |mut output, (i, ty)| {
+          // SAFETY: all elements `ty` in `entry` are of type `T` by virtue of
+          // hashing from `T`'s `TypeId` to the bucket of values `ty` of type
+          // `T`.
+          (
+            output[i] =
+              unsafe { ty.downcast_unchecked_mut::<T>().borrow_mut() },
+            output,
+          )
+            .1
+        })
+        .map(|ty| unsafe { ty.as_mut_unchecked() })
     }
 
     macro_rules! new_entry {
       ($entry:expr) => {{
         Ok::<_, FieldsExtError>(
           (
-            $entry.push({
-              let out: Box<dyn Any> =
-                Box::try_new(producer().map(Into::into).map_err(Into::into)?)
-                  .map_err(|_| {
+            $entry.push(
+              Box::try_new(producer().map(Into::into).map_err(Into::into)?)
+                .map_err(|_| {
                   FieldsExtError(AllocFailureKind::Type(
                     any::type_name::<T>().into(),
                   ))
-                })?;
-
-              out
-            }),
+                })? as Box<dyn Any>,
+            ),
             $entry,
           )
             .1,
@@ -95,42 +100,45 @@ where
     }
 
     // This doesn't use the `Entry` API because that API uses calls to
-    // allocation-wise fallible rouines that panic on failure.
-    if let Some(entry) = self.fields.0.get_mut(&TypeId::of::<T>()) {
-      Ok(extract_n::<Self, T, Q, N>((entry.len()..N).try_fold(
-        {
-          entry.try_reserve_exact(N).map_err(|_| {
-            FieldsExtError(AllocFailureKind::Bucket(
-              any::type_name::<T>().into(),
-            ))
-          })?;
-
-          entry
-        },
-        |entry, _| new_entry!(entry),
-      )?))
-    } else {
-      self.fields.0.try_reserve(1).map_err(|_| {
-        FieldsExtError(AllocFailureKind::BucketKey(
-          any::type_name::<T>().into(),
-        ))
-      })?;
-      self.fields.0.insert(
-        TypeId::of::<T>(),
-        (0..N).try_fold(
-          Vec::try_with_capacity(N).map_err(|_| {
-            FieldsExtError(AllocFailureKind::Bucket(
-              any::type_name::<T>().into(),
-            ))
-          })?,
-          |mut entry, _| new_entry!(entry),
+    // allocation-wise fallible routines that panic on failure.
+    match self.fields.0.get_mut(&TypeId::of::<T>()) {
+      | Some(entry) => Ok(extract_n::<Self, T, Q, N>(
+        (entry.len()..N).try_fold(
+          (
+            entry.try_reserve_exact(N).map_err(|_| {
+              FieldsExtError(AllocFailureKind::Bucket(
+                any::type_name::<T>().into(),
+              ))
+            })?,
+            entry,
+          )
+            .1,
+          |entry, _| new_entry!(entry),
         )?,
-      );
+      )),
+      | None => {
+        self.fields.0.try_reserve(1).map_err(|_| {
+          FieldsExtError(AllocFailureKind::BucketKey(
+            any::type_name::<T>().into(),
+          ))
+        })?;
+        self.fields.0.insert(
+          TypeId::of::<T>(),
+          (0..N).try_fold(
+            Vec::try_with_capacity(N).map_err(|_| {
+              FieldsExtError(AllocFailureKind::Bucket(
+                any::type_name::<T>().into(),
+              ))
+            })?,
+            |mut entry, _| new_entry!(entry),
+          )?,
+        );
 
-      // SAFETY: the key just got a bucket inserted above.
-      Ok(extract_n::<Self, T, Q, N>(unsafe {
-        self.fields.0.get_mut(&TypeId::of::<T>()).unwrap_unchecked()
-      }))
+        // SAFETY: the key just got a bucket inserted above.
+        Ok(extract_n::<Self, T, Q, N>(unsafe {
+          self.fields.0.get_mut(&TypeId::of::<T>()).unwrap_unchecked()
+        }))
+      },
     }
   }
 }
