@@ -1,11 +1,10 @@
 use std::{
-  alloc::AllocError,
   cmp::Ordering,
-  collections::TryReserveError,
   error::Error,
   fmt::{self, Debug, Display, Formatter, Write as _},
   hint,
   iter,
+  mem::MaybeUninit,
   num::NonZeroIsize,
   ops::{ControlFlow, Not},
 };
@@ -110,7 +109,7 @@ where
 {
   #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
 
-  let (mut name_state, mut graph) = (
+  iter::once((
     (0..component_range.len()).fold(
       Vec::try_with_capacity(component_range.len())
         .map_err(|_| BuildGraphError::AuxiliaryAlloc)?,
@@ -128,106 +127,118 @@ where
         | Err(_) => return BuildGraphError::AuxiliaryAlloc,
       })
     })?,
-  );
-  graph.iter_mut().try_fold(
-    // Must account for both the number of digits of the last vertex's
-    // coordinate, as well as the separation dots.
-    String::try_with_capacity(
-      component_range
-        .iter()
-        .map(|&component_range| {
-          (
-            // `c > 0` should hold for any component `c` in `component_range`
-            // after running `normalize_board_size()`.
-            debug_assert_ne!(component_range, 0),
-            // +1 because `ilog10()` rounds down.
-            component_range.ilog10() as usize + 1,
-          )
-            .1
-        })
-        .sum::<usize>()
-        + component_range.len(),
-    )
-    .map_err(|_| BuildGraphError::AuxiliaryAlloc)?,
-    |mut name, vertex| {
-      Ok::<_, BuildGraphError>(
-        (
-          name = name_state.iter().enumerate().try_fold(
-            name,
-            |mut name, (idx, component)| {
-              // TODO: the original GraphBase mentions that the first three
-              // components are saved in integer utility fields, but in theory,
-              // indices `0..3` point at the "last" three components, because
-              // `name_state` iterates from left to right in the following
-              // sequence: (a, b, ..., beta, alpha). The true "first" three
-              // components would be the last three in this iterator. For now,
-              // we're only reproducing the same behavior as the one in the
-              // original GraphBase.
-              Ok::<_, BuildGraphError>(
+  ))
+  .try_fold(MaybeUninit::uninit(), |mut out, (mut name_state, mut graph)| {
+    Ok(
+      (
+        _ = graph.iter_mut().try_fold(
+          // NOTE: this accounts for both the number of digits of the last
+          // vertex's coordinate, as well as separation dots, like so: `1.2.3`.
+          String::try_with_capacity(
+            component_range
+              .iter()
+              .map(|&component_range| {
                 (
-                  match idx {
-                    | n if n != name_state.len() - 1 =>
-                      write!(&mut name, "{component}."),
-                    | _ => write!(&mut name, "{component}"),
-                  }
-                  .map_err(|_| BuildGraphError::StreamWrite)?,
-                  (..3).contains(&idx).then_some(()).iter().try_for_each(
-                    |()| {
-                      // SAFETY: `idx` only ever takes on values in the range
-                      // `0..3`.
-                      Ok::<_, BuildGraphError>(
-                        match (
-                          idx,
-                          fields_of!(usize; 3 => v in G: vertex).map_err(
-                            |e| {
-                              BuildGraphError::FieldAccess(
-                                match Box::try_new(e) {
-                                  | Ok(e) => e as Box<dyn Error>,
-                                  | Err(_) =>
-                                    return BuildGraphError::AuxiliaryAlloc,
-                                },
-                              )
-                            },
-                          )?,
-                        ) {
-                          | (0, [x, ..]) => *x = *component,
-                          | (1, [_, y, _]) => *y = *component,
-                          | (2, [.., z]) => *z = *component,
-                          | _ => unsafe { hint::unreachable_unchecked() },
-                        },
-                      )
-                    },
-                  )?,
-                  name,
+                  // `c > 0` should hold for any component `c` in
+                  // `component_range` after running `normalize_board_size()`.
+                  debug_assert_ne!(component_range, 0),
+                  // +1 because `ilog10()` rounds down.
+                  component_range.ilog10() as usize + 1,
                 )
-                  .2,
+                  .1
+              })
+              .sum::<usize>()
+              + component_range.len(),
+          )
+          .map_err(|_| BuildGraphError::AuxiliaryAlloc)?,
+          |mut name, vertex| {
+            Ok(
+              (
+                name = name_state.iter().enumerate().try_fold(
+                  name,
+                  |mut name, (idx, component)| {
+                    // TODO: the original GraphBase mentions that the first
+                    // three components are saved in integer utility fields, but
+                    // in theory, indices `0..3` point at the "last" three
+                    // components, because `name_state` iterates from left to
+                    // right in the following sequence: (a, b, ..., beta,
+                    // alpha). The true "first" three components would be the
+                    // last three in this iterator. For now, we're only
+                    // reproducing the same behavior as the one in the original
+                    // GraphBase.
+                    Ok::<_, BuildGraphError>(
+                      (
+                        match idx {
+                          | n if n != name_state.len() - 1 =>
+                            write!(&mut name, "{component}."),
+                          | _ => write!(&mut name, "{component}"),
+                        }
+                        .map_err(|_| BuildGraphError::StreamWrite)?,
+                        (..3)
+                          .contains(&idx)
+                          .then_some(())
+                          .iter()
+                          .try_for_each(|()| {
+                            // NOTE: we could be terser and have the inner
+                            // branches' `Ok` wrapper be around the entire
+                            // `match`, but that breaks rustfmt inside the error
+                            // mapping call for the return value of `fields_of`.
+                            // SAFETY: `idx` only ever takes on values in the
+                            // range `0..3`.
+                            match (
+                              idx,
+                              fields_of!(usize; 3 => v in G: vertex).map_err(
+                                |e| {
+                                  BuildGraphError::FieldAccess(
+                                    match Box::try_new(e) {
+                                      | Ok(e) => e as Box<dyn Error>,
+                                      | Err(_) =>
+                                        return BuildGraphError::AuxiliaryAlloc,
+                                    },
+                                  )
+                                },
+                              )?,
+                            ) {
+                              | (0, [x, ..]) => Ok(*x = *component),
+                              | (1, [_, y, _]) => Ok(*y = *component),
+                              | (2, [.., z]) => Ok(*z = *component),
+                              | _ => unsafe { hint::unreachable_unchecked() },
+                            }
+                          })?,
+                        name,
+                      )
+                        .2,
+                    )
+                  },
+                )?,
+                vertex.set_id(name.as_str()),
+                name.clear(),
+                name_state
+                  .iter_mut()
+                  .zip(component_range)
+                  .rev()
+                  .try_for_each(|(component, ref_component)| match (*component
+                    + 1
+                    == *ref_component)
+                    .then(|| *component += 1)
+                    .or_else(|| (*component += 1, None).1)
+                  {
+                    | Some(()) => ControlFlow::Continue(()),
+                    | _ => ControlFlow::Break(()),
+                  })
+                  .into_value(),
+                name,
               )
-            },
-          )?,
-          vertex.set_id(name.as_str()),
-          name.clear(),
-          name_state
-            .iter_mut()
-            .zip(component_range)
-            .rev()
-            .try_for_each(|(component, ref_component)| {
-              match (*component + 1 == *ref_component)
-                .then(|| *component += 1)
-                .or_else(|| (*component += 1, None).1)
-              {
-                | Some(()) => ControlFlow::Continue(()),
-                | _ => ControlFlow::Break(()),
-              }
-            })
-            .into_value(),
-          name,
-        )
-          .4,
+                .4,
+            )
+          },
+        )?,
+        (_ = out.write(graph), out).1,
       )
-    },
-  )?;
-
-  Ok(graph)
+        .1,
+    )
+  })
+  .map(|graph| unsafe { graph.assume_init() })
 }
 
 #[derive(Debug, Error)]
@@ -281,7 +292,7 @@ where
     fn from(value: &'a isize) -> Self { Self::Num(*value) }
   }
 
-  // The string must account for
+  // NOTE: The string must account for
   // (1) `board()`, and
   // (2) however as many digits each of the parameters has (considering
   //     `ilog10()` rounds downward,) and
@@ -289,40 +300,34 @@ where
   //     (a) the commas after each of the parameters (other than the `directed`
   //         parameter,) and
   //     (b) the extra `directed` boolean parameter (encoded as `0`/`1`.)
-  Ok(
-    graph.set_id(
-      iter::once("board(")
-        .map_into::<IterElem>()
-        .chain(params.iter().map_into())
-        .chain(iter::once(isize::from(directed)).map_into())
-        .chain(iter::once(")").map_into::<IterElem>())
-        .try_fold(
-          String::try_with_capacity(
-            "board()".len()
-              + params
-                .iter()
-                .map(|param| {
-                  match (
-                    param.checked_ilog10(),
-                    param.unsigned_abs().ilog10() as usize,
-                  ) {
-                    | (Some(digits), _) => digits as usize + 1,
-                    | (_, digits) if param.is_negative() => digits + 2,
-                    | (_, digits) => digits + 1,
-                  }
-                })
-                .sum::<usize>()
-              + params.len()
-              + 1,
-          )
-          .map_err(|_| NamingError::AuxiliaryAlloc)?,
-          |mut graph_id, string| {
-            Ok((write_err!(graph_id, string)?, graph_id).1)
-          },
-        )?
-        .as_str(),
-    ),
-  )
+  iter::once("board(")
+    .map_into::<IterElem>()
+    .chain(params.iter().map_into())
+    .chain(iter::once(isize::from(directed)).map_into())
+    .chain(iter::once(")").map_into::<IterElem>())
+    .try_fold(
+      String::try_with_capacity(
+        "board()".len()
+          + params
+            .iter()
+            .map(|param| {
+              match (
+                param.checked_ilog10(),
+                param.unsigned_abs().ilog10() as usize,
+              ) {
+                | (Some(digits), _) => digits as usize + 1,
+                | (_, digits) if param.is_negative() => digits + 2,
+                | (_, digits) => digits + 1,
+              }
+            })
+            .sum::<usize>()
+          + params.len()
+          + 1,
+      )
+      .map_err(|_| NamingError::AuxiliaryAlloc)?,
+      |mut graph_id, string| write_err!(graph_id, string).map(|()| graph_id),
+    )
+    .map(|graph_id| graph.set_id(graph_id.as_str()))
 }
 
 #[derive(Debug, Error)]
