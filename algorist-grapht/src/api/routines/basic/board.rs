@@ -364,17 +364,14 @@ pub(crate) fn init_state(
   macro_rules! gen_vec {
     ($target_len:expr => $var:tt) => {{
       Vec::try_with_capacity($target_len)
-        .map(|mut out| {
-          out.resize($target_len, 0);
-
-          out
-        })
+        .map(|mut out| (out.resize($target_len, 0), out).1)
         .map_err(|_| {
           InitStateError::AuxiliaryAlloc(InitStateErrorSrc::$var, $target_len)
         })?
     }};
   }
 
+  // SAFETY: just read through the code.
   Ok((
     (0..dimensions)
       .fold(
@@ -387,12 +384,18 @@ pub(crate) fn init_state(
           })?,
           wrap.cast_unsigned(),
         ),
-        |(mut should_wrap, wrap_mask), _| {
+        |(should_wrap, wrap_mask), _| {
           (
-            should_wrap.push((wrap_mask & 1) != 0),
-            (should_wrap, wrap_mask >> 1),
+            unsafe {
+              iter::once(should_wrap)
+                .map(|mut should_wrap| {
+                  (should_wrap.push((wrap_mask & 1) != 0), should_wrap).1
+                })
+                .next()
+                .unwrap_unchecked()
+            },
+            wrap_mask >> 1,
           )
-            .1
         },
       )
       .0,
@@ -420,7 +423,7 @@ where
 {
   #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
 
-  // The below cast roundtrips will not cause overflow because of the same
+  // NOTE: the below cast roundtrips will not cause overflow because of the same
   // reasons as outlined in `fill_arcs()`.
   (0..usize::MAX)
     .try_for_each(|weight| {
@@ -428,20 +431,32 @@ where
         .iter_mut()
         .zip(component_range.iter().map(|&range| range.cast_signed()).zip(wrap))
         .try_for_each(|(component, (max_component, &should_wrap))| {
+          // SAFETY: just read through the code.
+          macro_rules! normalize {
+            ($iter:expr) => {
+              unsafe {
+                iter::once($iter)
+                  .map(|()| ControlFlow::Continue(()))
+                  .next()
+                  .unwrap_unchecked()
+              }
+            };
+          }
+
           match (
             (component.is_negative() && should_wrap),
             (*component >= max_component && should_wrap),
           ) {
-            | (true, _) => ControlFlow::Continue(
+            | (true, _) => normalize!(
               (*component..0)
                 .step_by(max_component.cast_unsigned())
-                .for_each(|_| *component += max_component),
+                .for_each(|_| *component += max_component)
             ),
-            | (_, true) => ControlFlow::Continue(
+            | (_, true) => normalize!(
               (max_component..*component)
                 .rev()
                 .step_by(max_component.cast_unsigned())
-                .for_each(|_| *component -= max_component),
+                .for_each(|_| *component -= max_component)
             ),
             | _ => ControlFlow::Break(Ok(())),
           }
@@ -451,6 +466,11 @@ where
         | Some(false) => ControlFlow::Break(Ok(())),
       }?;
       // TODO: change `ArcAddExt` to allow adding weights to arcs/edges.
+
+      macro_rules! new {
+        ($selector:tt =>) => {};
+      }
+
       match (
         (
           directed,
