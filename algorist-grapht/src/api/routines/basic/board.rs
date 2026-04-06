@@ -468,41 +468,80 @@ where
       // TODO: change `ArcAddExt` to allow adding weights to arcs/edges.
 
       macro_rules! new {
-        ($selector:tt =>) => {};
+        ($selector:tt; $src:expr) => {{
+          iter::once((
+            current_state
+              .iter()
+              .zip(
+                component_range.iter().map(|component| component.cast_signed()),
+              )
+              .skip(1)
+              .fold(
+                unsafe { *current_state.first().unwrap_unchecked() },
+                |idx, (component, max_range)| max_range * idx + component,
+              )
+              .cast_unsigned(),
+            |()| ControlFlow::Continue(()),
+            |e| {
+              ControlFlow::Break(Err(e).map_err(|e| {
+                GenMovesError::ArcAddition(match Box::try_new(e) {
+                  | Ok(e) => e as Box<dyn Error>,
+                  | Err(_) => return GenMovesError::AuxiliaryAlloc,
+                })
+              }))
+            },
+          ))
+          .map(|(dst, handler, error_handler)| {
+            macro_rules! _spec {
+              (arc) => {
+                graph.new_arc($src, dst).map_or_else(error_handler, handler)
+              };
+              (edge) => {
+                graph.new_edge($src, dst).map_or_else(error_handler, handler)
+              };
+            }
+
+            _spec!($selector)
+          });
+        }};
       }
 
-      match (
-        (
-          directed,
-          current_state
-            .iter()
-            .zip(
-              component_range.iter().map(|component| component.cast_signed()),
-            )
-            .skip(1)
-            .fold(
-              unsafe { *current_state.first().unwrap_unchecked() },
-              |idx, (component, max_range)| max_range * idx + component,
-            )
-            .cast_unsigned(),
-        ),
-        (
-          |e| {
-            ControlFlow::Break(Err(e).map_err(|e| {
-              GenMovesError::ArcAddition(match Box::try_new(e) {
-                | Ok(e) => e as Box<dyn Error>,
-                | Err(_) => return GenMovesError::AuxiliaryAlloc,
-              })
-            }))
-          },
-          |()| ControlFlow::Continue(()),
-        ),
-      ) {
-        | ((true, dst), (def, map)) =>
-          graph.new_arc(src, dst).map_or_else(def, map),
-        | ((false, dst), (def, map)) =>
-          graph.new_edge(src, dst).map_or_else(def, map),
+      match directed {
+        | true => new!(arc; src),
+        | false => todo!(),
       }?;
+      // match (
+      //   (
+      //     directed,
+      //     current_state
+      //       .iter()
+      //       .zip(
+      //         component_range.iter().map(|component|
+      // component.cast_signed()),       )
+      //       .skip(1)
+      //       .fold(
+      //         unsafe { *current_state.first().unwrap_unchecked() },
+      //         |idx, (component, max_range)| max_range * idx + component,
+      //       )
+      //       .cast_unsigned(),
+      //   ),
+      //   (
+      //     |e| {
+      //       ControlFlow::Break(Err(e).map_err(|e| {
+      //         GenMovesError::ArcAddition(match Box::try_new(e) {
+      //           | Ok(e) => e as Box<dyn Error>,
+      //           | Err(_) => return GenMovesError::AuxiliaryAlloc,
+      //         })
+      //       }))
+      //     },
+      //     |()| ControlFlow::Continue(()),
+      //   ),
+      // ) {
+      //   | ((true, dst), (def, map)) =>
+      //     graph.new_arc(src, dst).map_or_else(def, map),
+      //   | ((false, dst), (def, map)) =>
+      //     graph.new_edge(src, dst).map_or_else(def, map),
+      // }?;
 
       match piece.is_positive().then_some(Ok(())).ok_or_else(|| {
         current_state
