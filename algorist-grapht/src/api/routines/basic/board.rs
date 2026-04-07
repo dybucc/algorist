@@ -421,11 +421,9 @@ pub(crate) fn gen_moves<G: GraphBackend + ArcAddExt>(
 where
   for<'a> <G as ArcAddExt>::Error: 'a,
 {
-  #![expect(clippy::unit_arg, reason = "Beauty comes at a cost.")]
-
   // NOTE: the below cast roundtrips will not cause overflow because of the same
   // reasons as outlined in `fill_arcs()`.
-  (0..usize::MAX)
+  (1..usize::MAX)
     .try_for_each(|weight| {
       current_state
         .iter_mut()
@@ -447,17 +445,17 @@ where
             (component.is_negative() && should_wrap),
             (*component >= max_component && should_wrap),
           ) {
-            | (true, _) => normalize!(
+            | (true, _) => normalize! {
               (*component..0)
                 .step_by(max_component.cast_unsigned())
                 .for_each(|_| *component += max_component)
-            ),
-            | (_, true) => normalize!(
+            },
+            | (_, true) => normalize! {
               (max_component..*component)
                 .rev()
                 .step_by(max_component.cast_unsigned())
                 .for_each(|_| *component -= max_component)
-            ),
+            },
             | _ => ControlFlow::Break(Ok(())),
           }
         })?;
@@ -491,8 +489,8 @@ where
               }))
             },
           ))
-          .map(|(dst, handler, error_handler)| {
-            macro_rules! _spec {
+          .try_for_each(|(dst, handler, error_handler)| {
+            macro_rules! spec {
               (arc) => {
                 graph.new_arc($src, dst).map_or_else(error_handler, handler)
               };
@@ -501,47 +499,16 @@ where
               };
             }
 
-            _spec!($selector)
-          });
+            spec!($selector)
+          })
         }};
       }
 
-      match directed {
-        | true => new!(arc; src),
-        | false => todo!(),
+      match directed.then(|| new!(arc; src)).or_else(|| new!(edge; src).into())
+      {
+        | Some(res) => res,
+        | _ => unsafe { hint::unreachable_unchecked() },
       }?;
-      // match (
-      //   (
-      //     directed,
-      //     current_state
-      //       .iter()
-      //       .zip(
-      //         component_range.iter().map(|component|
-      // component.cast_signed()),       )
-      //       .skip(1)
-      //       .fold(
-      //         unsafe { *current_state.first().unwrap_unchecked() },
-      //         |idx, (component, max_range)| max_range * idx + component,
-      //       )
-      //       .cast_unsigned(),
-      //   ),
-      //   (
-      //     |e| {
-      //       ControlFlow::Break(Err(e).map_err(|e| {
-      //         GenMovesError::ArcAddition(match Box::try_new(e) {
-      //           | Ok(e) => e as Box<dyn Error>,
-      //           | Err(_) => return GenMovesError::AuxiliaryAlloc,
-      //         })
-      //       }))
-      //     },
-      //     |()| ControlFlow::Continue(()),
-      //   ),
-      // ) {
-      //   | ((true, dst), (def, map)) =>
-      //     graph.new_arc(src, dst).map_or_else(def, map),
-      //   | ((false, dst), (def, map)) =>
-      //     graph.new_edge(src, dst).map_or_else(def, map),
-      // }?;
 
       match piece.is_positive().then_some(Ok(())).ok_or_else(|| {
         current_state
@@ -694,10 +661,11 @@ where
               .iter_mut()
               .zip(component_range.iter().map(|range| range.cast_signed()))
               .rev()
-              .try_for_each(|(x, max_x)| {
-                match (*x + 1).cmp(&max_x) {
-                  | Ordering::Equal => (*x = 0, ControlFlow::Continue(())),
-                  | _ => (*x += 1, ControlFlow::Break(())),
+              .try_for_each(|(component, max_component)| {
+                match (*component + 1).cmp(&max_component) {
+                  | Ordering::Equal =>
+                    (*component = 0, ControlFlow::Continue(())),
+                  | _ => (*component += 1, ControlFlow::Break(())),
                 }
                 .1
               })
